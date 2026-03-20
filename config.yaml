@@ -33,7 +33,7 @@ claude:
 gsd:
   enabled: true
   timeout: 600000
-  progress_check_interval: 30
+  progress_check_interval: 60
   auto_mode: true
   auto_classify: true
   classify_model: haiku

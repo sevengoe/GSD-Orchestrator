@@ -7,7 +7,7 @@ from pathlib import Path
 KST = timezone(timedelta(hours=9))
 
 
-def extract_keyword(text: str, max_len: int = 10) -> str:
+def extract_keyword(text: str, max_len: int = 20) -> str:
     """사용자 메시지에서 핵심 키워드를 추출한다."""
     cleaned = re.sub(r"[^\w가-힣a-zA-Z0-9]", "", text)
     return cleaned[:max_len] if cleaned else "메시지"

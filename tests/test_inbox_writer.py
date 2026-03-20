@@ -7,10 +7,10 @@ from gsd_orchestrator.inbox_writer import InboxWriter, extract_keyword
 
 class TestExtractKeyword:
     def test_korean_text(self):
-        assert extract_keyword("로그인 API 리팩터링해줘") == "로그인API리팩터링"
+        assert extract_keyword("로그인 API 리팩터링해줘") == "로그인API리팩터링해줘"
 
     def test_english_text(self):
-        assert extract_keyword("fix login bug") == "fixloginbu"
+        assert extract_keyword("fix login bug") == "fixloginbug"
 
     def test_max_length(self):
         result = extract_keyword("abcdefghijklmnop", max_len=5)

@@ -6,17 +6,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# 메시지 (런타임 데이터)
-messages/inbox/*.json
-messages/inbox/*.processing
-messages/outbox/*.json
-messages/outbox/*.sending
-messages/sent/*.json
-messages/error/*.json
-messages/archive/
-
-# 로그
+# 런타임 (setup.sh에서 생성)
+messages/
 logs/
+workspace/
 
 # GSD 상태
 .planning/
@@ -25,6 +18,3 @@ logs/
 # 시스템
 .DS_Store
 /tmp/
-
-workspace/
-.env

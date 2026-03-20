@@ -40,7 +40,9 @@ GSD-Orchestrator/
 ├── config.yaml                   ← 일반 설정 (채널, 브로드캐스트, 폴링, Claude, GSD)
 ├── .env                          ← 민감 정보 (BOT_TOKEN, CHAT_ID, SLACK_TOKEN 등)
 ├── CHANGELOG.md                  ← 릴리즈 이력
-├── start.sh / stop.sh            ← 실행/중지
+├── setup.sh                      ← 초기 설정 (venv, 의존성, 디렉토리)
+├── start.sh / stop.sh / restart.sh ← 실행/중지/재시작
+├── logs.sh                       ← 로그 실시간 확인
 └── docs/                         ← 문서
     ├── 아키텍처.md                ← 시스템 설계, 멀티채널, 메시지 라이프사이클
     ├── 사용자-가이드.md            ← 설치, 설정, 명령어, 트러블슈팅
@@ -55,6 +57,9 @@ GSD-Orchestrator/
 ## 실행
 
 ```bash
-./start.sh    # venv 자동 생성, 패키지 설치, 디렉토리 생성, 실행
-./stop.sh     # 중지
+./setup.sh        # 최초 1회 (Slack: ./setup.sh --slack)
+./start.sh        # 시작
+./stop.sh         # 중지
+./restart.sh      # 재시작
+./logs.sh         # 로그 실시간 확인
 ```

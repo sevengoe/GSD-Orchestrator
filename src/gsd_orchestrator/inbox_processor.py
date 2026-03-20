@@ -183,10 +183,7 @@ class InboxProcessor:
                     msg = f"{header} 작업중입니다. (대기 {pending}건)"
                 else:
                     msg = f"{header} 작업중입니다."
-                await self._channel_manager.send_to(
-                    source.get("channel_type", ""),
-                    source.get("channel_id", ""),
-                    msg)
+                await self._channel_manager.broadcast_all(msg)
         except Exception as e:
             logger.warning(f"작업 시작 알림 실패: {e}")
 
