@@ -93,8 +93,50 @@ class InboxProcessor:
                 return str(candidate)
         return None
 
+    def _recover_stale_processing(self) -> None:
+        """잔류 .processing 파일을 복원하되, failcount가 초과되면 격리한다."""
+        for processing_file in self._config.inbox_dir.glob("*.json.processing"):
+            basename = processing_file.name.replace(".processing", "")
+            original = self._config.inbox_dir / basename
+            fc_path = Path(str(original) + ".failcount")
+            fc = self._read_int_file(fc_path) + 1
+            self._write_int_file(fc_path, fc)
+
+            if fc >= MAX_FILE_FAILURES:
+                # 실패 횟수 초과 → error/로 격리 + 채널 알림
+                try:
+                    shutil.move(str(processing_file),
+                                str(self._config.error_dir / basename))
+                    fc_path.unlink(missing_ok=True)
+                    logger.warning(
+                        f".processing 실패 횟수 초과 ({fc}회), error/로 격리: {basename}")
+                    # 요청 내용을 읽어서 알림에 포함
+                    try:
+                        data = json.loads(
+                            (self._config.error_dir / basename).read_text())
+                        req = data.get("request", {}).get("text", "")[:30]
+                    except Exception:
+                        req = basename
+                    asyncio.get_running_loop().create_task(
+                        self._send_alert(
+                            f"[시스템] 요청 처리 실패 ({fc}회 반복). "
+                            f"'{req}' 요청을 건너뜁니다."
+                        )
+                    )
+                except OSError as e:
+                    logger.error(f".processing 격리 실패: {basename} — {e}")
+            else:
+                # 복원하여 재처리
+                try:
+                    processing_file.rename(original)
+                    logger.info(
+                        f"잔류 .processing 파일 복원 ({fc}/{MAX_FILE_FAILURES}): {basename}")
+                except OSError as e:
+                    logger.error(f".processing 복원 실패: {processing_file.name} — {e}")
+
     async def run(self):
         """inbox 디렉토리를 폴링하여 메시지를 처리한다."""
+        self._recover_stale_processing()
         while True:
             try:
                 await self._process_inbox()
@@ -103,6 +145,9 @@ class InboxProcessor:
             await asyncio.sleep(self._config.inbox_check_interval)
 
     async def _process_inbox(self):
+        # 매 폴링마다 잔류 .processing 파일 체크
+        self._recover_stale_processing()
+
         if self._is_cooldown():
             return
 
@@ -125,6 +170,25 @@ class InboxProcessor:
             file.rename(processing_file)
         except OSError:
             return
+
+        # 작업 시작 알림 — 요청 채널에 "작업중입니다" 발송
+        try:
+            data = json.loads(processing_file.read_text())
+            source = data.get("source", {})
+            keyword = data.get("keyword", "")
+            if source and self._channel_manager:
+                header = _build_header(source, keyword)
+                pending = len(list(self._config.inbox_dir.glob("*.json")))
+                if pending > 0:
+                    msg = f"{header} 작업중입니다. (대기 {pending}건)"
+                else:
+                    msg = f"{header} 작업중입니다."
+                await self._channel_manager.send_to(
+                    source.get("channel_type", ""),
+                    source.get("channel_id", ""),
+                    msg)
+        except Exception as e:
+            logger.warning(f"작업 시작 알림 실패: {e}")
 
         try:
             await self._process_file(processing_file, basename)
@@ -177,9 +241,13 @@ class InboxProcessor:
     # ===================================================================
     async def _classify_request(self, text: str) -> str:
         prompt = (
-            "다음 사용자 요청을 분류해줘. 코드 작성/수정/구현/리팩터링/마이그레이션 등 "
-            "복잡한 개발 작업이면 'gsd', 단순 질문/확인/설명 요청이면 'simple'로만 답해. "
-            f"다른 말 하지 마.\n\n요청: {text}"
+            "다음 사용자 요청을 분류해줘.\n"
+            "- 코드 작성/수정/구현/리팩터링/마이그레이션 등 복잡한 개발 작업 → 'gsd'\n"
+            "- 여러 파일을 수정해야 하거나, 설계+구현+테스트 등 단계가 많은 작업 → 'gsd'\n"
+            "- 작업량이 많아 5분 이상 소요될 것으로 보이는 작업 → 'gsd'\n"
+            "- 단순 질문/확인/설명/조회 요청 → 'simple'\n"
+            "'gsd' 또는 'simple'로만 답해. 다른 말 하지 마.\n\n"
+            f"요청: {text}"
         )
         result = await self._run_claude(prompt, model=self._config.gsd_classify_model, ephemeral=True)
         if result and "gsd" in result.get("result", "").lower():
@@ -263,8 +331,22 @@ class InboxProcessor:
             )
         else:
             await self._send_alert(f"{header} GSD 시작")
+            gsd_prompt = (
+                f"/gsd:do {request_text}\n\n"
+                "## 실행 룰 (반드시 준수)\n"
+                "1. 먼저 작업을 분석하여 분류 단위(모듈/기능/컴포넌트)로 분할한 계획을 출력하세요.\n"
+                "   - 각 분류 단위별: 작업 범위, 변경 대상 파일, 예상 소요\n"
+                "   - 전체 진행 순서와 의존 관계\n"
+                "   - 이 계획을 사용자에게 보고하고 확인을 기다리세요.\n"
+                "2. 확인을 받으면 분류 단위별로 다음 순서를 반복하세요:\n"
+                "   분석 → 설계 → 구현 → 단위테스트\n"
+                "3. 한 분류 단위가 완료되면 결과를 보고하고, 다음 단위로 진행하세요.\n"
+                "4. 중간에 중단되더라도 해당 분류 단위부터 재시작할 수 있도록 "
+                "각 단위의 완료 상태를 명확히 기록하세요.\n"
+                "5. 전체 완료 후 최종 요약을 출력하세요."
+            )
             result = await self._run_claude(
-                f"/gsd:do {request_text}",
+                gsd_prompt,
                 progress_label=f"GSD: {request_text[:20]}",
             )
 
@@ -351,6 +433,7 @@ class InboxProcessor:
         finally:
             if progress_task:
                 progress_task.cancel()
+                self._cleanup_progress_alerts()
             if proc and proc.returncode is None:
                 try:
                     proc.kill()
@@ -423,6 +506,28 @@ class InboxProcessor:
             logger.info(f"outbox 조립 완료: {basename}")
         except Exception as e:
             logger.error(f"outbox 조립 실패: {basename} — {e}")
+
+    def _cleanup_progress_alerts(self) -> None:
+        """outbox에 남아있는 미발송 progress 알림 파일을 삭제한다."""
+        for f in self._config.outbox_dir.glob("*_system-alert.json"):
+            try:
+                data = json.loads(f.read_text())
+                resp_text = data.get("response", {}).get("text", "")
+                if "처리 중..." in resp_text and "경과)" in resp_text:
+                    f.unlink()
+                    logger.info(f"progress 알림 정리: {f.name}")
+            except Exception:
+                pass
+        # .sending 상태인 것도 정리
+        for f in self._config.outbox_dir.glob("*_system-alert.json.sending"):
+            try:
+                data = json.loads(f.read_text())
+                resp_text = data.get("response", {}).get("text", "")
+                if "처리 중..." in resp_text and "경과)" in resp_text:
+                    f.unlink()
+                    logger.info(f"progress 알림 정리: {f.name}")
+            except Exception:
+                pass
 
     # ===================================================================
     # 시스템 알림 (전채널 브로드캐스트)

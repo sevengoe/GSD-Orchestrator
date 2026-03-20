@@ -24,8 +24,19 @@ class OutboxSender:
         self._error_dir.mkdir(parents=True, exist_ok=True)
         self._interval = interval
 
+    def _recover_stale_sending(self) -> None:
+        """잔류 .sending 파일을 원래 이름으로 복원한다."""
+        for sending_file in self._dir.glob("*.json.sending"):
+            original = self._dir / sending_file.name.replace(".sending", "")
+            try:
+                sending_file.rename(original)
+                logger.info(f"잔류 .sending 파일 복원: {original.name}")
+            except OSError as e:
+                logger.error(f".sending 복원 실패: {sending_file.name} — {e}")
+
     async def run(self):
         """outbox 디렉토리를 폴링하여 채널로 발송한다."""
+        self._recover_stale_sending()
         while True:
             try:
                 await self._process_outbox()

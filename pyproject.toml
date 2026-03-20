@@ -17,6 +17,7 @@ gsd-orchestrator = "gsd_orchestrator.__main__:main"
 [project.optional-dependencies]
 slack = [
     "slack-bolt>=1.18",
+    "aiohttp>=3.9",
     "slack-sdk>=3.26",
 ]
 test = [

@@ -43,9 +43,12 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 source "${VENV_DIR}/bin/activate"
 
-# 패키지 설치
-if ! python -c "import gsd_orchestrator" 2>/dev/null; then
-    echo "패키지 설치 중..."
+# PYTHONPATH 설정 (src/ 직접 참조)
+export PYTHONPATH="${PROJECT_DIR}/src:${PYTHONPATH:-}"
+
+# 의존성 설치
+if ! python -c "import telegram" 2>/dev/null; then
+    echo "의존성 설치 중..."
     pip install -e . 2>&1 | tail -3
 fi
 
@@ -68,7 +71,7 @@ print(f'워킹 디렉토리: {w}')
 rm -f /tmp/gsd-orchestrator.cooldown /tmp/gsd-orchestrator.failcount /tmp/gsd-orchestrator.lock
 
 # 시작
-echo "GSD Orchestrator v1.0.0 시작 (PID: $$)"
+echo "GSD Orchestrator v0.5.0 시작 (PID: $$)"
 echo $$ > "$PID_FILE"
 trap "rm -f $PID_FILE" EXIT
 

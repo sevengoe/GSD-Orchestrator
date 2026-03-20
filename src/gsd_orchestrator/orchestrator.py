@@ -122,25 +122,14 @@ class Orchestrator:
                 msg = f"{header} GSD 블로킹 응답 접수. (앞선 작업 {pending}건 처리 중)"
             else:
                 msg = f"{header} GSD 블로킹 응답 접수."
-            await self._channel_manager.broadcast_all(msg)
+            await self._channel_manager.send_to(
+                source.get("channel_type", ""), source.get("channel_id", ""), msg)
             return
 
         # inbox 저장
         self._inbox_writer.write(source, text, mode=mode)
 
-        # 모든 채널에 수신 확인
-        if mode == "gsd":
-            if pending > 0:
-                msg = f"{header} GSD 작업 접수. (앞선 작업 {pending}건 처리 중)"
-            else:
-                msg = f"{header} GSD 작업 접수."
-        else:
-            if pending > 0:
-                msg = f"{header} 작업중입니다. (앞선 작업 {pending}건 처리 중)"
-            else:
-                msg = f"{header} 작업중입니다."
-
-        await self._channel_manager.broadcast_all(msg)
+        # 수신 확인은 inbox_processor가 .processing 전환 시 발송
 
     # ── 백그라운드 태스크 ────────────────────────────────
 
@@ -192,14 +181,15 @@ class Orchestrator:
         """비동기 실행. 호스트 앱의 이벤트 루프에서 호출 가능."""
         logger.info("gsd-orchestrator 시작")
 
-        await self._channel_manager.start_all(self._on_channel_message)
-
+        # 백그라운드 태스크를 먼저 시작 (채널 어댑터의 long-polling이 루프를 점유하기 전)
         self._tasks = [
             asyncio.create_task(self._inbox_processor.run()),
             asyncio.create_task(self._outbox_sender.run()),
             asyncio.create_task(self._inbox_stale_check()),
             asyncio.create_task(self._run_archiver()),
         ]
+
+        await self._channel_manager.start_all(self._on_channel_message)
 
     async def stop(self) -> None:
         """비동기 정지."""

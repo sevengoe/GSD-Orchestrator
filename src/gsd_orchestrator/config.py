@@ -74,7 +74,7 @@ class Config:
         telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
         slack_enabled = slack_cfg.get("enabled", False)
-        slack_channel_id = slack_cfg.get("channel_id", "")
+        slack_channel_id = slack_cfg.get("channel_id", "") or os.environ.get("SLACK_CHANNEL_ID", "")
 
         # 최소 하나의 채널 활성화 검증은 Orchestrator에서 수행
 

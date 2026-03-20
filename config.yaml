@@ -4,8 +4,8 @@ channels:
     chat_id: ""                    # 빈 문자열이면 .env TELEGRAM_CHAT_ID 사용
 
   slack:
-    enabled: false
-    channel_id: ""                 # Slack 채널 ID (예: C12345)
+    enabled: true
+    channel_id: ""                 # 빈 문자열이면 .env SLACK_CHANNEL_ID 사용
 
 broadcast:
   snippet_length: 500              # 상대 채널 브로드캐스트 요약 길이 (0이면 전체 발송)

@@ -37,8 +37,16 @@ class TelegramAdapter(ChannelAdapter):
 
     async def start(self, on_message: Callable[..., Awaitable[None]]) -> None:
         self._on_message_callback = on_message
-        self._app = Application.builder().token(self._bot_token).build()
+        self._app = (
+            Application.builder()
+            .token(self._bot_token)
+            .get_updates_read_timeout(2)
+            .get_updates_connect_timeout(5)
+            .build()
+        )
 
+        self._app.add_handler(CommandHandler("help", self._on_help))
+        self._app.add_handler(CommandHandler("start", self._on_help))
         self._app.add_handler(CommandHandler("reset", self._on_reset))
         self._app.add_handler(CommandHandler("status", self._on_status))
         self._app.add_handler(CommandHandler("resume", self._on_resume))
@@ -49,7 +57,10 @@ class TelegramAdapter(ChannelAdapter):
 
         await self._app.initialize()
         await self._app.start()
-        await self._app.updater.start_polling()
+        await self._app.updater.start_polling(
+            poll_interval=1.0,
+            drop_pending_updates=True,
+        )
         logger.info(f"TelegramAdapter 시작 (chat_id: {self._chat_id})")
 
     async def stop(self) -> None:
@@ -113,6 +124,23 @@ class TelegramAdapter(ChannelAdapter):
             await self._on_message_callback(source=source, text=text)
 
     # ── 슬래시 커맨드 ──────────────────────────────────────
+
+    async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return
+        help_text = (
+            "GSD Orchestrator 명령어\n"
+            "\n"
+            "/help — 이 도움말\n"
+            "/gsd <작업> — GSD 워크플로우로 작업 실행\n"
+            "  (계획 수립 → 확인 → 분류 단위별 분석/설계/구현/테스트)\n"
+            "/status — 상태 확인 (대기 건수, 쿨다운, 토큰 사용량)\n"
+            "/reset — 다음 요청부터 새 세션으로 시작\n"
+            "/resume — 쿨다운 즉시 해제\n"
+            "\n"
+            "일반 메시지 — 자동 분류 후 Simple Track 또는 GSD Track으로 라우팅"
+        )
+        await update.message.reply_text(help_text)
 
     async def _on_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
