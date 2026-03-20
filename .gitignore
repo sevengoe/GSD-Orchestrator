@@ -1,0 +1,30 @@
+# 환경
+.env
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# 메시지 (런타임 데이터)
+messages/inbox/*.json
+messages/inbox/*.processing
+messages/outbox/*.json
+messages/outbox/*.sending
+messages/sent/*.json
+messages/error/*.json
+messages/archive/
+
+# 로그
+logs/
+
+# GSD 상태
+.planning/
+.gsd/
+
+# 시스템
+.DS_Store
+/tmp/
+
+workspace/
+.env

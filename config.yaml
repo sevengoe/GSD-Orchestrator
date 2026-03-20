@@ -1,0 +1,46 @@
+channels:
+  telegram:
+    enabled: true
+    chat_id: ""                    # 빈 문자열이면 .env TELEGRAM_CHAT_ID 사용
+
+  slack:
+    enabled: false
+    channel_id: ""                 # Slack 채널 ID (예: C12345)
+
+broadcast:
+  snippet_length: 500              # 상대 채널 브로드캐스트 요약 길이 (0이면 전체 발송)
+
+polling:
+  inbox_check_interval: 10
+  outbox_interval: 3
+  progress_interval: 30
+
+archive:
+  message_retention_days: 30
+
+log:
+  dir: logs
+  retention_days: 14
+
+claude:
+  mode: headless
+  dangerously_skip_permissions: true
+  timeout: 600
+  cooldown_retry_minutes: 10
+  max_session_turns: 20
+  working_dir: workspace
+
+gsd:
+  enabled: true
+  timeout: 600000
+  progress_check_interval: 30
+  auto_mode: true
+  auto_classify: true
+  classify_model: haiku
+
+paths:
+  inbox_dir: messages/inbox
+  outbox_dir: messages/outbox
+  sent_dir: messages/sent
+  error_dir: messages/error
+  archive_dir: messages/archive

@@ -1,0 +1,36 @@
+[project]
+name = "gsd-orchestrator"
+version = "0.5.0"
+description = "비동기 메시징 기반의 자율형 개발 오케스트레이터"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "python-telegram-bot>=21.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "mcp>=1.2.0",
+]
+
+[project.scripts]
+gsd-orchestrator = "gsd_orchestrator.__main__:main"
+
+[project.optional-dependencies]
+slack = [
+    "slack-bolt>=1.18",
+    "slack-sdk>=3.26",
+]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
