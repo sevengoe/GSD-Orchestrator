@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import time
-from pathlib import Path
 from typing import Callable, Awaitable
 
 from .config import Config
@@ -16,7 +15,6 @@ from .api import ChannelSender
 
 logger = logging.getLogger(__name__)
 
-BLOCKED_FILE = Path("/tmp/gsd-orchestrator.blocked")
 
 # on_result 콜백 타입: (source, request_text, response_text, status)
 ResultCallback = Callable[[dict, str, str, str], Awaitable[None]]
@@ -34,14 +32,22 @@ class Orchestrator:
         self._inbox_writer = InboxWriter(config.inbox_dir)
         self._result_callback: ResultCallback | None = None
         self._tasks: list[asyncio.Task] = []
+        self._blocked_file = config.runtime_path("blocked")
 
         # 채널 어댑터 생성
         adapters: list[ChannelAdapter] = []
+
+        runtime_paths = {
+            name: config.runtime_path(name)
+            for name in ("blocked", "token-usage", "reset", "cooldown",
+                         "failcount", "cooldown-alerted")
+        }
 
         if config.telegram_enabled and config.telegram_bot_token:
             adapters.append(TelegramAdapter(
                 bot_token=config.telegram_bot_token,
                 chat_id=config.telegram_chat_id,
+                runtime_paths=runtime_paths,
             ))
 
         if config.slack_enabled and config.slack_bot_token:
@@ -112,10 +118,10 @@ class Orchestrator:
         header = f"[{source.get('channel_type', '')}][{source.get('user_name', '')}][{keyword}]"
 
         # GSD 블로킹 상태에서 사용자 응답 → gsd-resume
-        if mode == "default" and BLOCKED_FILE.exists():
+        if mode == "default" and self._blocked_file.exists():
             self._inbox_writer.write(source, text, mode="gsd-resume")
             try:
-                BLOCKED_FILE.unlink()
+                self._blocked_file.unlink()
             except OSError:
                 pass
             if pending > 0:

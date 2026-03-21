@@ -11,18 +11,23 @@ from .base import ChannelAdapter
 
 logger = logging.getLogger(__name__)
 
-BLOCKED_FILE = Path("/tmp/gsd-orchestrator.blocked")
-TOKEN_TRACK_FILE = Path("/tmp/gsd-orchestrator.token-usage")
-
 
 class TelegramAdapter(ChannelAdapter):
     """Telegram 채널 어댑터. python-telegram-bot 기반."""
 
-    def __init__(self, bot_token: str, chat_id: str):
+    def __init__(self, bot_token: str, chat_id: str, runtime_paths: dict[str, Path] | None = None):
         self._bot_token = bot_token
         self._chat_id = chat_id
         self._app: Application | None = None
         self._on_message_callback: Callable[..., Awaitable[None]] | None = None
+        # 인스턴스별 런타임 파일 경로
+        paths = runtime_paths or {}
+        self._blocked_file = paths.get("blocked", Path("/tmp/gsd-orchestrator.blocked"))
+        self._token_track_file = paths.get("token-usage", Path("/tmp/gsd-orchestrator.token-usage"))
+        self._reset_file = paths.get("reset", Path("/tmp/gsd-orchestrator.reset"))
+        self._cooldown_file = paths.get("cooldown", Path("/tmp/gsd-orchestrator.cooldown"))
+        self._fail_count_file = paths.get("failcount", Path("/tmp/gsd-orchestrator.failcount"))
+        self._cooldown_alert_file = paths.get("cooldown-alerted", Path("/tmp/gsd-orchestrator.cooldown-alerted"))
 
     @property
     def channel_type(self) -> str:
@@ -145,19 +150,18 @@ class TelegramAdapter(ChannelAdapter):
     async def _on_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
             return
-        Path("/tmp/gsd-orchestrator.reset").touch()
+        self._reset_file.touch()
         await update.message.reply_text("다음 요청부터 새 세션으로 시작합니다.")
 
     async def _on_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
             return
 
-        cooldown_file = Path("/tmp/gsd-orchestrator.cooldown")
         lines = []
 
-        if cooldown_file.exists():
+        if self._cooldown_file.exists():
             try:
-                resume_at = int(cooldown_file.read_text().strip())
+                resume_at = int(self._cooldown_file.read_text().strip())
                 remaining = max(0, resume_at - int(time.time()))
                 lines.append(f"쿨다운 중: {remaining // 60}분 후 재개")
             except (ValueError, OSError):
@@ -165,12 +169,12 @@ class TelegramAdapter(ChannelAdapter):
         else:
             lines.append("상태: 정상 운영 중")
 
-        if BLOCKED_FILE.exists():
+        if self._blocked_file.exists():
             lines.append("GSD 블로킹: 사용자 판단 대기 중")
 
-        if TOKEN_TRACK_FILE.exists():
+        if self._token_track_file.exists():
             try:
-                token_data = json.loads(TOKEN_TRACK_FILE.read_text())
+                token_data = json.loads(self._token_track_file.read_text())
                 total_in = token_data.get("input_tokens", 0)
                 total_out = token_data.get("output_tokens", 0)
                 total_cost = token_data.get("total_cost_usd", 0)
@@ -193,12 +197,8 @@ class TelegramAdapter(ChannelAdapter):
         if not self._is_allowed(update):
             return
 
-        cooldown_file = Path("/tmp/gsd-orchestrator.cooldown")
-        failcount_file = Path("/tmp/gsd-orchestrator.failcount")
-        cooldown_alert_file = Path("/tmp/gsd-orchestrator.cooldown-alerted")
-
         removed = []
-        for f in [cooldown_file, failcount_file, cooldown_alert_file]:
+        for f in [self._cooldown_file, self._fail_count_file, self._cooldown_alert_file]:
             if f.exists():
                 try:
                     f.unlink()

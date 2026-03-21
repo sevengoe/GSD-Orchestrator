@@ -28,18 +28,9 @@ for p in _EXTRA_PATHS:
     if p not in os.environ.get("PATH", ""):
         os.environ["PATH"] = p + ":" + os.environ.get("PATH", "")
 
-BLOCKED_FILE = Path("/tmp/gsd-orchestrator.blocked")
-TOKEN_TRACK_FILE = Path("/tmp/gsd-orchestrator.token-usage")
-RESET_FILE = Path("/tmp/gsd-orchestrator.reset")
-TURN_COUNT_FILE = Path("/tmp/gsd-orchestrator.turncount")
-FAIL_COUNT_FILE = Path("/tmp/gsd-orchestrator.failcount")
-COOLDOWN_FILE = Path("/tmp/gsd-orchestrator.cooldown")
-ACTIVE_FILE = Path("/tmp/gsd-orchestrator.active")
-
 MAX_FILE_FAILURES = 3
 MAX_GLOBAL_FAILURES = 5
 COOLDOWN_ALERT_SECONDS = 5 * 3600
-COOLDOWN_ALERT_FILE = Path("/tmp/gsd-orchestrator.cooldown-alerted")
 
 
 def _build_header(source: dict, keyword: str) -> str:
@@ -62,6 +53,16 @@ class InboxProcessor:
         self._working_dir.mkdir(parents=True, exist_ok=True)
         self._gsd_tools = self._find_gsd_tools()
         self._gsd_commands_dir = self._find_gsd_commands()
+
+        # 인스턴스별 런타임 파일 경로
+        self._blocked_file = config.runtime_path("blocked")
+        self._token_track_file = config.runtime_path("token-usage")
+        self._reset_file = config.runtime_path("reset")
+        self._turn_count_file = config.runtime_path("turncount")
+        self._fail_count_file = config.runtime_path("failcount")
+        self._cooldown_file = config.runtime_path("cooldown")
+        self._active_file = config.runtime_path("active")
+        self._cooldown_alert_file = config.runtime_path("cooldown-alerted")
 
     def set_result_callback(self, callback: ResultCallback | None) -> None:
         self._result_callback = callback
@@ -225,8 +226,8 @@ class InboxProcessor:
                 if classified == "gsd":
                     mode = "gsd"
 
-        resumed = not ACTIVE_FILE.exists()
-        ACTIVE_FILE.touch()
+        resumed = not self._active_file.exists()
+        self._active_file.touch()
 
         if mode in ("gsd", "gsd-resume"):
             await self._process_gsd(file, basename, data, mode, request_text, resumed, source)
@@ -257,15 +258,15 @@ class InboxProcessor:
     async def _process_simple(self, file: Path, basename: str, data: dict,
                               request_text: str, resumed: bool, source: dict):
         continue_flag = True
-        if RESET_FILE.exists():
+        if self._reset_file.exists():
             continue_flag = False
-            RESET_FILE.unlink(missing_ok=True)
-            TURN_COUNT_FILE.unlink(missing_ok=True)
+            self._reset_file.unlink(missing_ok=True)
+            self._turn_count_file.unlink(missing_ok=True)
 
-        turn_count = self._read_int_file(TURN_COUNT_FILE)
+        turn_count = self._read_int_file(self._turn_count_file)
         if turn_count >= self._config.claude_max_session_turns:
             continue_flag = False
-            self._write_int_file(TURN_COUNT_FILE, 0)
+            self._write_int_file(self._turn_count_file, 0)
             await self._send_alert(
                 f"[시스템] 세션이 자동 리셋되었습니다. ({self._config.claude_max_session_turns}건 처리 완료)"
             )
@@ -281,12 +282,12 @@ class InboxProcessor:
             self._track_tokens(result)
             await self._notify_result(source, request_text, result["result"], "success")
 
-            turn_count = self._read_int_file(TURN_COUNT_FILE)
-            self._write_int_file(TURN_COUNT_FILE, turn_count + 1)
+            turn_count = self._read_int_file(self._turn_count_file)
+            self._write_int_file(self._turn_count_file, turn_count + 1)
 
-            FAIL_COUNT_FILE.unlink(missing_ok=True)
-            COOLDOWN_FILE.unlink(missing_ok=True)
-            COOLDOWN_ALERT_FILE.unlink(missing_ok=True)
+            self._fail_count_file.unlink(missing_ok=True)
+            self._cooldown_file.unlink(missing_ok=True)
+            self._cooldown_alert_file.unlink(missing_ok=True)
 
             if resumed:
                 await self._send_alert("[시스템] 작업을 다시 시작했습니다.")
@@ -314,7 +315,7 @@ class InboxProcessor:
                 source, data)
             return
 
-        BLOCKED_FILE.unlink(missing_ok=True)
+        self._blocked_file.unlink(missing_ok=True)
 
         keyword = data.get("keyword", "")
         header = _build_header(source, keyword)
@@ -351,7 +352,7 @@ class InboxProcessor:
 
         blocker_text = self._check_gsd_blockers()
         if blocker_text:
-            BLOCKED_FILE.write_text(basename)
+            self._blocked_file.write_text(basename)
             blocked_msg = (
                 f"GSD 블로킹: {blocker_text}\n\n"
                 "답변을 보내주세요. 다음 메시지가 GSD 재개 응답으로 전달됩니다."
@@ -361,9 +362,9 @@ class InboxProcessor:
         elif result and result.get("subtype") == "success" and result.get("result"):
             self._assemble_outbox(file, basename, result["result"], source, data)
             await self._notify_result(source, request_text, result["result"], "success")
-            FAIL_COUNT_FILE.unlink(missing_ok=True)
-            COOLDOWN_FILE.unlink(missing_ok=True)
-            COOLDOWN_ALERT_FILE.unlink(missing_ok=True)
+            self._fail_count_file.unlink(missing_ok=True)
+            self._cooldown_file.unlink(missing_ok=True)
+            self._cooldown_alert_file.unlink(missing_ok=True)
             if resumed:
                 await self._send_alert("[시스템] 작업을 다시 시작했습니다.")
         else:
@@ -591,15 +592,15 @@ class InboxProcessor:
         else:
             self._write_int_file(fc_path, fc)
 
-        gfc = self._read_int_file(FAIL_COUNT_FILE) + 1
-        self._write_int_file(FAIL_COUNT_FILE, gfc)
+        gfc = self._read_int_file(self._fail_count_file) + 1
+        self._write_int_file(self._fail_count_file, gfc)
 
         if gfc >= MAX_GLOBAL_FAILURES:
             retry_min = self._config.claude_cooldown_retry_minutes
             resume_at = int(time.time()) + retry_min * 60
-            COOLDOWN_FILE.write_text(str(resume_at))
-            ACTIVE_FILE.unlink(missing_ok=True)
-            FAIL_COUNT_FILE.unlink(missing_ok=True)
+            self._cooldown_file.write_text(str(resume_at))
+            self._active_file.unlink(missing_ok=True)
+            self._fail_count_file.unlink(missing_ok=True)
             asyncio.get_running_loop().create_task(
                 self._send_alert(
                     f"[시스템] 연속 실패 감지. {retry_min}분 후 자동 재시도. "
@@ -618,9 +619,9 @@ class InboxProcessor:
             model_usage = result.get("modelUsage", {})
 
             existing = {}
-            if TOKEN_TRACK_FILE.exists():
+            if self._token_track_file.exists():
                 try:
-                    existing = json.loads(TOKEN_TRACK_FILE.read_text())
+                    existing = json.loads(self._token_track_file.read_text())
                 except (json.JSONDecodeError, OSError):
                     existing = {}
 
@@ -642,7 +643,7 @@ class InboxProcessor:
                 "stop_reason": result.get("stop_reason", ""),
             }
 
-            TOKEN_TRACK_FILE.write_text(json.dumps(existing, indent=2, ensure_ascii=False))
+            self._token_track_file.write_text(json.dumps(existing, indent=2, ensure_ascii=False))
         except Exception as e:
             logger.warning(f"토큰 추적 실패: {e}")
 
@@ -650,28 +651,28 @@ class InboxProcessor:
     # 쿨다운
     # ===================================================================
     def _is_cooldown(self) -> bool:
-        if not COOLDOWN_FILE.exists():
-            COOLDOWN_ALERT_FILE.unlink(missing_ok=True)
+        if not self._cooldown_file.exists():
+            self._cooldown_alert_file.unlink(missing_ok=True)
             return False
         try:
-            resume_at = int(COOLDOWN_FILE.read_text().strip())
+            resume_at = int(self._cooldown_file.read_text().strip())
             now = int(time.time())
             if now < resume_at:
                 cooldown_start = resume_at - self._config.claude_cooldown_retry_minutes * 60
                 elapsed = now - cooldown_start
-                if elapsed >= COOLDOWN_ALERT_SECONDS and not COOLDOWN_ALERT_FILE.exists():
-                    COOLDOWN_ALERT_FILE.touch()
+                if elapsed >= COOLDOWN_ALERT_SECONDS and not self._cooldown_alert_file.exists():
+                    self._cooldown_alert_file.touch()
                     asyncio.get_running_loop().create_task(
                         self._send_alert(
                             "[시스템] 쿨다운 5시간 이상 지속. 토큰 상태 확인 필요. /resume 으로 재시도 가능."
                         )
                     )
                 return True
-            COOLDOWN_FILE.unlink(missing_ok=True)
-            COOLDOWN_ALERT_FILE.unlink(missing_ok=True)
+            self._cooldown_file.unlink(missing_ok=True)
+            self._cooldown_alert_file.unlink(missing_ok=True)
             return False
         except (ValueError, OSError):
-            COOLDOWN_FILE.unlink(missing_ok=True)
+            self._cooldown_file.unlink(missing_ok=True)
             return False
 
     # ===================================================================

@@ -7,7 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 PROJECT_DIR="$(pwd)"
 VENV_DIR="${PROJECT_DIR}/.venv"
-PID_FILE="/tmp/gsd-orchestrator.pid"
+INSTANCE_ID=$(echo -n "$(pwd)" | md5 -q | cut -c1-8)
+PID_FILE="/tmp/gsd-orchestrator-${INSTANCE_ID}.pid"
 
 # setup.sh 실행 여부 확인
 if [ ! -d "$VENV_DIR" ]; then
@@ -26,14 +27,14 @@ set -a
 source .env
 set +a
 
-# 기존 프로세스 종료
-EXISTING=$(pgrep -f "python.*gsd_orchestrator" 2>/dev/null || true)
-if [ -n "$EXISTING" ]; then
-    echo "기존 프로세스 종료 중..."
-    pkill -f "python.*gsd_orchestrator" 2>/dev/null || true
-    sleep 2
-    pkill -9 -f "python.*gsd_orchestrator" 2>/dev/null || true
-    sleep 1
+# 이 인스턴스의 기존 프로세스만 종료 (PID 파일 기반)
+if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE")
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "기존 인스턴스 종료 중 (PID: $OLD_PID)..."
+        ./stop.sh
+        sleep 1
+    fi
 fi
 rm -f "$PID_FILE"
 
@@ -52,11 +53,13 @@ os.makedirs(w, exist_ok=True)
 print(f'워킹 디렉토리: {w}')
 "
 
-# 상태 파일 정리
-rm -f /tmp/gsd-orchestrator.cooldown /tmp/gsd-orchestrator.failcount /tmp/gsd-orchestrator.lock
+# 이 인스턴스의 상태 파일만 정리
+rm -f "/tmp/gsd-orchestrator-${INSTANCE_ID}.cooldown" \
+      "/tmp/gsd-orchestrator-${INSTANCE_ID}.failcount" \
+      "/tmp/gsd-orchestrator-${INSTANCE_ID}.lock"
 
 # 시작
-echo "GSD Orchestrator v0.5.0 시작 (PID: $$)"
+echo "GSD Orchestrator v0.5.0 시작 (PID: $$, instance: ${INSTANCE_ID})"
 echo $$ > "$PID_FILE"
 trap "rm -f $PID_FILE" EXIT
 

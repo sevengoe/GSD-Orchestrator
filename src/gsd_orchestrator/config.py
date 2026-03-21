@@ -1,11 +1,17 @@
+import hashlib
 import os
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import yaml
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _make_instance_id(base_dir: Path) -> str:
+    """프로젝트 경로에서 인스턴스 고유 해시(8자)를 생성한다."""
+    return hashlib.md5(str(base_dir.resolve()).encode()).hexdigest()[:8]
 
 
 @dataclass
@@ -57,12 +63,20 @@ class Config:
     error_dir: Path
     archive_dir: Path
 
+    # instance
+    instance_id: str = ""
+
+    def runtime_path(self, name: str) -> Path:
+        """인스턴스별 런타임 파일 경로를 반환한다. /tmp/gsd-orchestrator-{hash}.{name}"""
+        return Path(f"/tmp/gsd-orchestrator-{self.instance_id}.{name}")
+
     @classmethod
     def load(cls, config_path: str = "config.yaml") -> "Config":
         with open(config_path) as f:
             cfg = yaml.safe_load(f)
 
-        base_dir = Path(config_path).parent
+        base_dir = Path(config_path).parent.resolve()
+        instance_id = _make_instance_id(base_dir)
 
         # ── 채널 설정 (하위 호환: channels 섹션 없으면 .env fallback) ──
         channels = cfg.get("channels", {})
@@ -116,4 +130,6 @@ class Config:
             sent_dir=base_dir / cfg["paths"]["sent_dir"],
             error_dir=base_dir / cfg["paths"]["error_dir"],
             archive_dir=base_dir / cfg["paths"]["archive_dir"],
+            # instance
+            instance_id=instance_id,
         )

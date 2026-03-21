@@ -1,9 +1,10 @@
 #!/bin/bash
 # GSD Orchestrator 중지
-# gsd_orchestrator 프로세스 + 자식 프로세스(claude 등)를 모두 종료한다.
-# 여러 인스턴스가 실행 중일 수 있으므로 PID 파일 기반으로 해당 프로세스 트리만 종료.
+# 이 인스턴스의 프로세스 트리만 종료한다 (다른 인스턴스에 영향 없음).
 
-PID_FILE="/tmp/gsd-orchestrator.pid"
+cd "$(dirname "$0")"
+INSTANCE_ID=$(echo -n "$(pwd)" | md5 -q | cut -c1-8)
+PID_FILE="/tmp/gsd-orchestrator-${INSTANCE_ID}.pid"
 
 kill_tree() {
     local pid=$1
@@ -21,7 +22,7 @@ kill_tree() {
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
-        echo "GSD Orchestrator 프로세스 트리 종료 (PID: $PID)"
+        echo "GSD Orchestrator 프로세스 트리 종료 (PID: $PID, instance: $INSTANCE_ID)"
         kill_tree "$PID"
         sleep 2
         # 아직 살아있으면 강제 종료
@@ -37,17 +38,5 @@ if [ -f "$PID_FILE" ]; then
         rm -f "$PID_FILE"
     fi
 else
-    # PID 파일 없으면 프로세스 검색
-    PIDS=$(pgrep -f "python.*gsd_orchestrator" 2>/dev/null || true)
-    if [ -n "$PIDS" ]; then
-        echo "GSD Orchestrator 프로세스 종료: $PIDS"
-        for pid in $PIDS; do
-            kill_tree "$pid"
-        done
-        sleep 2
-        pkill -9 -f "python.*gsd_orchestrator" 2>/dev/null || true
-        echo "중지 완료"
-    else
-        echo "실행 중인 GSD Orchestrator가 없습니다."
-    fi
+    echo "실행 중인 GSD Orchestrator가 없습니다. (instance: $INSTANCE_ID)"
 fi
