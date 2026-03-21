@@ -33,6 +33,7 @@ class Orchestrator:
         self._result_callback: ResultCallback | None = None
         self._tasks: list[asyncio.Task] = []
         self._blocked_file = config.runtime_path("blocked")
+        self._start_time = int(time.time())
 
         # 채널 어댑터 생성
         adapters: list[ChannelAdapter] = []
@@ -117,6 +118,22 @@ class Orchestrator:
         keyword = extract_keyword(text)
         header = f"[{source.get('channel_type', '')}][{source.get('user_name', '')}][{keyword}]"
 
+        # 메시지 수신 지연 감지 (60초 이상)
+        delay_notice = ""
+        message_ts = source.get("message_ts", 0)
+        if message_ts > 0:
+            delay = int(time.time()) - message_ts
+            if delay >= 60:
+                minutes = delay // 60
+                seconds = delay % 60
+                if message_ts < self._start_time:
+                    # 메시지가 프로세스 시작 전에 전송됨 → 앱 정지 중 밀린 메시지
+                    delay_notice = f"\n(앱 정지 중 수신된 메시지입니다. {minutes}분 {seconds}초 전 전송)"
+                else:
+                    # 프로세스 실행 중 지연 → 네트워크 문제
+                    delay_notice = f"\n(네트워크 불안정으로 수신이 {minutes}분 {seconds}초 지연되었습니다)"
+                logger.warning(f"메시지 수신 지연: {delay}초 ({source.get('channel_type')})")
+
         # GSD 블로킹 상태에서 사용자 응답 → gsd-resume
         if mode == "default" and self._blocked_file.exists():
             self._inbox_writer.write(source, text, mode="gsd-resume")
@@ -129,7 +146,8 @@ class Orchestrator:
             else:
                 msg = f"{header} GSD 블로킹 응답 접수."
             await self._channel_manager.send_to(
-                source.get("channel_type", ""), source.get("channel_id", ""), msg)
+                source.get("channel_type", ""), source.get("channel_id", ""),
+                msg + delay_notice)
             return
 
         # GSD 세션 활성 상태에서 사용자 응답 → gsd-resume (세션 이어가기)
@@ -140,10 +158,13 @@ class Orchestrator:
             else:
                 msg = f"{header} GSD 작업 이어서 진행합니다."
             await self._channel_manager.send_to(
-                source.get("channel_type", ""), source.get("channel_id", ""), msg)
+                source.get("channel_type", ""), source.get("channel_id", ""),
+                msg + delay_notice)
             return
 
-        # inbox 저장
+        # inbox 저장 (delay_notice는 source에 포함하여 inbox_processor에서 활용)
+        if delay_notice:
+            source["delay_notice"] = delay_notice
         self._inbox_writer.write(source, text, mode=mode)
 
         # 수신 확인은 inbox_processor가 .processing 전환 시 발송

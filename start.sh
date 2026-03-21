@@ -67,4 +67,16 @@ mkdir -p "$LOG_DIR"
 nohup python -m gsd_orchestrator > /dev/null 2>&1 &
 PID=$!
 echo "$PID" > "$PID_FILE"
-echo "GSD Orchestrator v0.5.0 시작 (PID: $PID, instance: ${INSTANCE_ID})"
+
+# 절전 방지 — 프로세스 실행 중에는 절전 모드 진입을 막아 polling 중단 방지
+if [[ "$(uname)" == "Darwin" ]]; then
+    caffeinate -i -w "$PID" &
+    echo "GSD Orchestrator v0.5.0 시작 (PID: $PID, instance: ${INSTANCE_ID}, 절전 방지: caffeinate)"
+elif command -v systemd-inhibit &>/dev/null; then
+    systemd-inhibit --what=idle --who="gsd-orchestrator" --why="메시지 polling 유지" \
+        tail --pid="$PID" -f /dev/null &
+    echo "GSD Orchestrator v0.5.0 시작 (PID: $PID, instance: ${INSTANCE_ID}, 절전 방지: systemd-inhibit)"
+else
+    echo "GSD Orchestrator v0.5.0 시작 (PID: $PID, instance: ${INSTANCE_ID})"
+    echo "⚠ 절전 방지 도구를 찾을 수 없습니다. 절전 모드 시 메시지 수신이 지연될 수 있습니다."
+fi

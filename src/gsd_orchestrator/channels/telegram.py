@@ -100,12 +100,17 @@ class TelegramAdapter(ChannelAdapter):
     def _build_source(self, update: Update) -> dict:
         user = update.effective_user
         chat = update.effective_chat
+        # message.date: 원본 메시지 전송 시각 (UTC datetime)
+        message_ts = 0
+        if update.message and update.message.date:
+            message_ts = int(update.message.date.timestamp())
         return {
             "channel_type": "telegram",
             "channel_id": str(chat.id),
             "user_id": str(user.id) if user else "",
             "user_name": (user.full_name or user.username or str(user.id)) if user else "",
             "message_id": update.message.message_id if update.message else 0,
+            "message_ts": message_ts,
             "thread_ts": None,
         }
 

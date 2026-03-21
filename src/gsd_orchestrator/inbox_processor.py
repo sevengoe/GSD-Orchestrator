@@ -180,11 +180,14 @@ class InboxProcessor:
             keyword = data.get("keyword", "")
             if source and self._channel_manager:
                 header = _build_header(source, keyword)
+                delay_notice = source.get("delay_notice", "")
                 pending = len(list(self._config.inbox_dir.glob("*.json")))
                 if pending > 0:
                     msg = f"{header} 작업중입니다. (대기 {pending}건)"
                 else:
                     msg = f"{header} 작업중입니다."
+                if delay_notice:
+                    msg += delay_notice
                 await self._channel_manager.broadcast_all(msg)
         except Exception as e:
             logger.warning(f"작업 시작 알림 실패: {e}")
