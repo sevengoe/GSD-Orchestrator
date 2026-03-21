@@ -8,6 +8,7 @@ import asyncio
 import json
 import time
 import pytest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -604,6 +605,85 @@ class TestNotificationAlerts:
         alert_texts = [json.loads(f.read_text())["response"]["text"]
                        for f in alert_files]
         assert any("세션이 자동 리셋" in t for t in alert_texts)
+
+
+# ── 알림 피로도 제어: quiet hours ────────────────────────────
+
+
+class TestAlertQuietHours:
+    """알림 무음 시간대 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_quiet_hours_suppresses_alert(self, setup):
+        """무음 시간대에는 알림이 생략된다."""
+        processor = setup["processor"]
+        config = setup["config"]
+        outbox = setup["outbox"]
+
+        # 현재 시각을 무음 범위에 포함시킴
+        from gsd_orchestrator.inbox_processor import KST
+        current_hour = datetime.now(KST).hour
+        config.alert_quiet_start = current_hour
+        config.alert_quiet_end = (current_hour + 2) % 24
+
+        await processor._send_alert("[시스템] 테스트 알림")
+
+        # outbox에 알림 파일이 생성되지 않아야 함
+        alert_files = list(outbox.glob("*_system-alert.json"))
+        assert len(alert_files) == 0
+
+    @pytest.mark.asyncio
+    async def test_outside_quiet_hours_sends_alert(self, setup):
+        """무음 시간대 밖에서는 알림이 정상 발송된다."""
+        processor = setup["processor"]
+        config = setup["config"]
+        outbox = setup["outbox"]
+
+        # 현재 시각을 무음 범위 밖으로 설정
+        from gsd_orchestrator.inbox_processor import KST
+        current_hour = datetime.now(KST).hour
+        config.alert_quiet_start = (current_hour + 5) % 24
+        config.alert_quiet_end = (current_hour + 7) % 24
+
+        await processor._send_alert("[시스템] 테스트 알림")
+
+        alert_files = list(outbox.glob("*_system-alert.json"))
+        assert len(alert_files) == 1
+
+    @pytest.mark.asyncio
+    async def test_quiet_hours_disabled_by_default(self, setup):
+        """기본값(-1)이면 무음 비활성 → 알림 정상 발송."""
+        processor = setup["processor"]
+        config = setup["config"]
+        outbox = setup["outbox"]
+
+        # 기본값 확인
+        assert config.alert_quiet_start == -1
+        assert config.alert_quiet_end == -1
+
+        await processor._send_alert("[시스템] 기본 알림")
+
+        alert_files = list(outbox.glob("*_system-alert.json"))
+        assert len(alert_files) == 1
+
+    def test_is_quiet_hour_overnight_range(self, setup):
+        """자정을 넘는 범위 (예: 23~06) 테스트."""
+        processor = setup["processor"]
+        config = setup["config"]
+
+        config.alert_quiet_start = 23
+        config.alert_quiet_end = 6
+
+        from gsd_orchestrator.inbox_processor import KST
+        current_hour = datetime.now(KST).hour
+
+        result = processor._is_quiet_hour()
+
+        # 현재 시각이 23~06 범위이면 True, 아니면 False
+        if current_hour >= 23 or current_hour < 6:
+            assert result is True
+        else:
+            assert result is False
 
 
 # ── 정리: 런타임 파일 cleanup ────────────────────────────────

@@ -40,7 +40,7 @@ class Orchestrator:
         runtime_paths = {
             name: config.runtime_path(name)
             for name in ("blocked", "token-usage", "reset", "cooldown",
-                         "failcount", "cooldown-alerted")
+                         "failcount", "cooldown-alerted", "gsd-active")
         }
 
         if config.telegram_enabled and config.telegram_bot_token:
@@ -128,6 +128,17 @@ class Orchestrator:
                 msg = f"{header} GSD 블로킹 응답 접수. (앞선 작업 {pending}건 처리 중)"
             else:
                 msg = f"{header} GSD 블로킹 응답 접수."
+            await self._channel_manager.send_to(
+                source.get("channel_type", ""), source.get("channel_id", ""), msg)
+            return
+
+        # GSD 세션 활성 상태에서 사용자 응답 → gsd-resume (세션 이어가기)
+        if mode == "default" and self._inbox_processor.is_gsd_active():
+            self._inbox_writer.write(source, text, mode="gsd-resume")
+            if pending > 0:
+                msg = f"{header} GSD 작업 이어서 진행합니다. (앞선 작업 {pending}건 처리 중)"
+            else:
+                msg = f"{header} GSD 작업 이어서 진행합니다."
             await self._channel_manager.send_to(
                 source.get("channel_type", ""), source.get("channel_id", ""), msg)
             return

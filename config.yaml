@@ -10,6 +10,10 @@ channels:
 broadcast:
   snippet_length: 500              # 상대 채널 브로드캐스트 요약 길이 (0이면 전체 발송)
 
+alert:
+  quiet_start: -1                  # 알림 무음 시작 시각 (0~23, -1이면 비활성)
+  quiet_end: -1                    # 알림 무음 종료 시각 (0~23, 예: quiet_start: 23, quiet_end: 6 → 23시~06시 무음)
+
 polling:
   inbox_check_interval: 10
   outbox_interval: 3
@@ -37,6 +41,8 @@ gsd:
   auto_mode: true
   auto_classify: true
   classify_model: haiku
+  session_timeout_minutes: 30     # GSD 세션 유지 시간 (0이면 즉시 종료)
+  history_max_messages: 3          # 세션 유실 시 이력 복원 최대 메시지 수
 
 paths:
   inbox_dir: messages/inbox

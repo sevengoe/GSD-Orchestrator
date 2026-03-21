@@ -63,6 +63,7 @@ class InboxProcessor:
         self._cooldown_file = config.runtime_path("cooldown")
         self._active_file = config.runtime_path("active")
         self._cooldown_alert_file = config.runtime_path("cooldown-alerted")
+        self._gsd_active_file = config.runtime_path("gsd-active")
 
     def set_result_callback(self, callback: ResultCallback | None) -> None:
         self._result_callback = callback
@@ -317,13 +318,41 @@ class InboxProcessor:
         keyword = data.get("keyword", "")
         header = _build_header(source, keyword)
 
+        # 새 GSD 작업이면 이전 세션 종료
+        if mode == "gsd":
+            self._gsd_active_file.unlink(missing_ok=True)
+
         if mode == "gsd-resume":
             await self._send_alert(f"{header} GSD 재개")
-            prompt = f"{request_text}\n\n위 내용을 반영하여 /gsd:next 로 작업을 계속 진행해주세요. 완료 후 결과를 요약해서 텍스트로만 출력해주세요."
-            result = await self._run_claude(
-                prompt, continue_session=True,
-                progress_label=f"GSD 재개: {request_text[:20]}",
-            )
+
+            # 세션 유실 여부 판단: .gsd-active에 기록된 PID와 현재 PID 비교
+            session_alive = self._is_gsd_session_alive()
+
+            if session_alive:
+                prompt = f"{request_text}\n\n위 내용을 반영하여 /gsd:next 로 작업을 계속 진행해주세요. 완료 후 결과를 요약해서 텍스트로만 출력해주세요."
+                result = await self._run_claude(
+                    prompt, continue_session=True,
+                    progress_label=f"GSD 재개: {request_text[:20]}",
+                )
+            else:
+                # 세션 유실 → sent/ 이력으로 맥락 복원
+                logger.info("GSD 세션 유실 감지 — sent/ 이력으로 맥락 복원")
+                channel_id = source.get("channel_id", "")
+                context = self._build_context_from_history(channel_id)
+                if context:
+                    prompt = (
+                        f"이전 대화 맥락을 참고하여 작업을 이어서 진행하세요.\n\n"
+                        f"{context}\n\n"
+                        f"사용자의 새 메시지: {request_text}\n\n"
+                        "위 맥락을 반영하여 /gsd:next 로 작업을 계속 진행해주세요. "
+                        "완료 후 결과를 요약해서 텍스트로만 출력해주세요."
+                    )
+                else:
+                    prompt = f"{request_text}\n\n위 내용을 반영하여 /gsd:next 로 작업을 계속 진행해주세요. 완료 후 결과를 요약해서 텍스트로만 출력해주세요."
+                result = await self._run_claude(
+                    prompt,
+                    progress_label=f"GSD 재개(복원): {request_text[:20]}",
+                )
         else:
             await self._send_alert(f"{header} GSD 시작")
             gsd_prompt = (
@@ -362,9 +391,13 @@ class InboxProcessor:
             self._fail_count_file.unlink(missing_ok=True)
             self._cooldown_file.unlink(missing_ok=True)
             self._cooldown_alert_file.unlink(missing_ok=True)
+            # GSD 세션 활성 표시 (PID 기록 → 세션 유실 판단용)
+            if self._config.gsd_session_timeout_minutes > 0:
+                self._gsd_active_file.write_text(str(os.getpid()))
         else:
             error_msg = (result or {}).get("result", "GSD 처리 실패")
             await self._notify_result(source, request_text, error_msg, "error")
+            self._gsd_active_file.unlink(missing_ok=True)
             self._handle_failure(file, basename)
 
     # ===================================================================
@@ -525,7 +558,25 @@ class InboxProcessor:
     # ===================================================================
     # 시스템 알림 (전채널 브로드캐스트)
     # ===================================================================
+    def _is_quiet_hour(self) -> bool:
+        """현재 시각이 알림 무음 시간대인지 확인한다."""
+        start = self._config.alert_quiet_start
+        end = self._config.alert_quiet_end
+        if start < 0 or end < 0:
+            return False
+        hour = datetime.now(KST).hour
+        if start <= end:
+            # 예: 23~6이 아닌 09~18 같은 일반 범위
+            return start <= hour < end
+        else:
+            # 자정을 넘는 범위: 예: 23~06
+            return hour >= start or hour < end
+
     async def _send_alert(self, text: str):
+        if self._is_quiet_hour():
+            logger.info(f"알림 무음 시간대 — 알림 생략: {text[:50]}")
+            return
+
         now = datetime.now(KST)
         short_id = uuid.uuid4().hex[:8]
         filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{short_id}_system-alert.json"
@@ -695,6 +746,100 @@ class InboxProcessor:
         except Exception:
             pass
         return ""
+
+    # ===================================================================
+    # GSD 세션 관리
+    # ===================================================================
+    def _is_gsd_session_alive(self) -> bool:
+        """GSD 세션이 현재 프로세스에서 유지되고 있는지 확인한다."""
+        if not self._gsd_active_file.exists():
+            return False
+        try:
+            stored_pid = int(self._gsd_active_file.read_text().strip())
+            return stored_pid == os.getpid()
+        except (ValueError, OSError):
+            return False
+
+    def is_gsd_active(self) -> bool:
+        """GSD 세션이 활성 상태이고 타임아웃되지 않았는지 확인한다.
+        Orchestrator에서 호출용."""
+        if not self._gsd_active_file.exists():
+            return False
+        timeout = self._config.gsd_session_timeout_minutes
+        if timeout <= 0:
+            return False
+        try:
+            age = time.time() - self._gsd_active_file.stat().st_mtime
+            if age > timeout * 60:
+                self._gsd_active_file.unlink(missing_ok=True)
+                return False
+            return True
+        except OSError:
+            return False
+
+    def clear_gsd_active(self) -> None:
+        """GSD 세션 활성 상태를 해제한다."""
+        self._gsd_active_file.unlink(missing_ok=True)
+
+    def _build_context_from_history(self, user_channel_id: str) -> str:
+        """sent/ 디렉토리에서 최근 대화 이력을 읽어 맥락 문자열을 생성한다."""
+        max_messages = self._config.gsd_history_max_messages
+        if max_messages <= 0:
+            return ""
+
+        # sent/ + 오늘 archive/ 에서 파일 수집
+        candidates: list[Path] = []
+        candidates.extend(self._config.sent_dir.glob("*.json"))
+
+        today = datetime.now(KST).strftime("%Y-%m-%d")
+        today_archive = self._config.archive_dir / today
+        if today_archive.exists():
+            candidates.extend(today_archive.glob("*.json"))
+
+        # system-alert 제외, 시간순 정렬 (최신 먼저)
+        candidates = [f for f in candidates if "_system-alert" not in f.name]
+        candidates.sort(key=lambda f: f.name, reverse=True)
+
+        messages = []
+        for f in candidates:
+            if len(messages) >= max_messages:
+                break
+            try:
+                data = json.loads(f.read_text())
+                source = data.get("source", {})
+                if source.get("channel_id") != user_channel_id:
+                    continue
+                req = data.get("request", {})
+                resp = data.get("response", {})
+                if not req or not resp or not resp.get("text"):
+                    continue
+                messages.append({
+                    "request": req.get("text", ""),
+                    "response": resp.get("text", ""),
+                })
+            except (json.JSONDecodeError, OSError):
+                continue
+
+        if not messages:
+            return ""
+
+        # 시간순으로 되돌림 (오래된 것 → 최신)
+        messages.reverse()
+
+        lines = ["--- 이전 대화 ---"]
+        for msg in messages:
+            lines.append(f"[요청] {msg['request']}")
+            # 응답에서 헤더 제거 (처리결과 이후 본문만)
+            resp_text = msg["response"]
+            if "] 처리결과\n\n" in resp_text:
+                resp_text = resp_text.split("] 처리결과\n\n", 1)[1]
+            # 길이 제한 (맥락이 너무 길면 토큰 낭비)
+            if len(resp_text) > 2000:
+                resp_text = resp_text[:2000] + "\n... (이하 생략)"
+            lines.append(f"[응답] {resp_text}")
+        lines.append("--- 이전 대화 끝 ---")
+
+        return "\n".join(lines)
 
     # ===================================================================
     # 유틸리티

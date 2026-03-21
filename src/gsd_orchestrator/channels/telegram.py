@@ -28,6 +28,7 @@ class TelegramAdapter(ChannelAdapter):
         self._cooldown_file = paths.get("cooldown", Path("/tmp/gsd-orchestrator.cooldown"))
         self._fail_count_file = paths.get("failcount", Path("/tmp/gsd-orchestrator.failcount"))
         self._cooldown_alert_file = paths.get("cooldown-alerted", Path("/tmp/gsd-orchestrator.cooldown-alerted"))
+        self._gsd_active_file = paths.get("gsd-active", Path("/tmp/gsd-orchestrator.gsd-active"))
 
     @property
     def channel_type(self) -> str:
@@ -151,6 +152,7 @@ class TelegramAdapter(ChannelAdapter):
         if not self._is_allowed(update):
             return
         self._reset_file.touch()
+        self._gsd_active_file.unlink(missing_ok=True)
         await update.message.reply_text("다음 요청부터 새 세션으로 시작합니다.")
 
     async def _on_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

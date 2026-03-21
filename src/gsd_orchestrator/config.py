@@ -55,6 +55,12 @@ class Config:
     gsd_auto_mode: bool
     gsd_auto_classify: bool
     gsd_classify_model: str
+    gsd_session_timeout_minutes: int
+    gsd_history_max_messages: int
+
+    # alert
+    alert_quiet_start: int  # 알림 무음 시작 시각 (0~23, -1이면 비활성)
+    alert_quiet_end: int    # 알림 무음 종료 시각 (0~23)
 
     # paths
     inbox_dir: Path
@@ -124,6 +130,11 @@ class Config:
             gsd_auto_mode=cfg.get("gsd", {}).get("auto_mode", True),
             gsd_auto_classify=cfg.get("gsd", {}).get("auto_classify", False),
             gsd_classify_model=cfg.get("gsd", {}).get("classify_model", "haiku"),
+            gsd_session_timeout_minutes=cfg.get("gsd", {}).get("session_timeout_minutes", 30),
+            gsd_history_max_messages=cfg.get("gsd", {}).get("history_max_messages", 3),
+            # alert
+            alert_quiet_start=cfg.get("alert", {}).get("quiet_start", -1),
+            alert_quiet_end=cfg.get("alert", {}).get("quiet_end", -1),
             # paths
             inbox_dir=base_dir / cfg["paths"]["inbox_dir"],
             outbox_dir=base_dir / cfg["paths"]["outbox_dir"],
