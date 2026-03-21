@@ -65,6 +65,13 @@ class InboxProcessor:
         self._cooldown_alert_file = config.runtime_path("cooldown-alerted")
         self._gsd_active_file = config.runtime_path("gsd-active")
 
+        # 작업 큐
+        self._workqueue_dir = config.workqueue_dir
+        self._workqueue_dir.mkdir(parents=True, exist_ok=True)
+        self._plan_dir = config.plan_dir
+        self._plan_dir.mkdir(parents=True, exist_ok=True)
+        self._plan_file = self._plan_dir / ".gsd-plan.md"
+
     def set_result_callback(self, callback: ResultCallback | None) -> None:
         self._result_callback = callback
 
@@ -155,6 +162,8 @@ class InboxProcessor:
 
         files = sorted(self._config.inbox_dir.glob("*.json"))
         if not files:
+            # inbox가 비어있으면 작업 큐 처리
+            await self._process_workqueue()
             return
 
         file = files[0]
@@ -321,11 +330,32 @@ class InboxProcessor:
         keyword = data.get("keyword", "")
         header = _build_header(source, keyword)
 
-        # 새 GSD 작업이면 이전 세션 종료
+        # 새 GSD 작업이면 이전 세션 + 작업 큐 종료
         if mode == "gsd":
             self._gsd_active_file.unlink(missing_ok=True)
+            self._clear_workqueue()
+            self._plan_file.unlink(missing_ok=True)
 
         if mode == "gsd-resume":
+            # 계획서가 존재하면 작업 큐를 생성하고 순차 실행
+            if self._plan_file.exists() and not self._has_workqueue():
+                units = self._parse_plan()
+                if units:
+                    self._enqueue_plan_units(units, source, data)
+                    self._assemble_outbox(
+                        file, basename,
+                        f"작업 큐 생성 완료 ({len(units)}개 단위). 순차 실행을 시작합니다.",
+                        source, data)
+                    await self._notify_result(
+                        source, request_text,
+                        f"작업 큐 {len(units)}개 단위 생성", "success")
+                    self._fail_count_file.unlink(missing_ok=True)
+                    self._cooldown_file.unlink(missing_ok=True)
+                    self._cooldown_alert_file.unlink(missing_ok=True)
+                    if self._config.gsd_session_timeout_minutes > 0:
+                        self._gsd_active_file.write_text(str(os.getpid()))
+                    return
+
             await self._send_alert(f"{header} GSD 재개")
 
             # 세션 유실 여부 판단: .gsd-active에 기록된 PID와 현재 PID 비교
@@ -359,18 +389,28 @@ class InboxProcessor:
         else:
             await self._send_alert(f"{header} GSD 시작")
             gsd_prompt = (
-                f"/gsd:do {request_text}\n\n"
+                f"{request_text}\n\n"
                 "## 실행 룰 (반드시 준수)\n"
-                "1. 먼저 작업을 분석하여 분류 단위(모듈/기능/컴포넌트)로 분할한 계획을 출력하세요.\n"
-                "   - 각 분류 단위별: 작업 범위, 변경 대상 파일, 예상 소요\n"
-                "   - 전체 진행 순서와 의존 관계\n"
-                "   - 이 계획을 사용자에게 보고하고 확인을 기다리세요.\n"
-                "2. 확인을 받으면 분류 단위별로 다음 순서를 반복하세요:\n"
-                "   분석 → 설계 → 구현 → 단위테스트\n"
-                "3. 한 분류 단위가 완료되면 결과를 보고하고, 다음 단위로 진행하세요.\n"
-                "4. 중간에 중단되더라도 해당 분류 단위부터 재시작할 수 있도록 "
-                "각 단위의 완료 상태를 명확히 기록하세요.\n"
-                "5. 전체 완료 후 최종 요약을 출력하세요."
+                "작업 규모를 판단하세요:\n"
+                "- 10분 이내 완료 가능한 단순 작업 → 즉시 실행하고 결과를 텍스트로 출력\n"
+                "- 10분 초과 예상되는 복잡한 작업 → 아래 규칙에 따라 계획서를 작성\n\n"
+                "### 계획서 작성 규칙 (복잡한 작업일 때만)\n"
+                f"1. `{self._plan_file}` 파일을 생성하세요\n"
+                "2. 아래 형식을 정확히 따르세요:\n"
+                "```markdown\n"
+                "# GSD 작업 계획\n"
+                "## 원본 요청\n"
+                "{사용자 요청 원문}\n"
+                "## 단위 작업\n"
+                "- [ ] Unit 1: {작업 제목}\n"
+                "  - 범위: {구체적 작업 내용}\n"
+                "  - 대상: {변경 파일 목록}\n"
+                "- [ ] Unit 2: {작업 제목}\n"
+                "  - 범위: {구체적 작업 내용}\n"
+                "  - 대상: {변경 파일 목록}\n"
+                "```\n"
+                "3. 계획서 내용을 사용자에게 보고하세요 (텍스트로 출력)\n"
+                "4. 계획서 작성만 하고, 직접 코드를 수정하지 마세요\n"
             )
             result = await self._run_claude(
                 gsd_prompt,
@@ -389,8 +429,12 @@ class InboxProcessor:
             self._assemble_outbox(file, basename, blocked_msg, source, data)
             await self._notify_result(source, request_text, blocker_text, "blocked")
         elif result and result.get("subtype") == "success" and result.get("result"):
-            self._assemble_outbox(file, basename, result["result"], source, data)
-            await self._notify_result(source, request_text, result["result"], "success")
+            # 계획서가 생성되었으면 알림 메시지에 안내 추가
+            response_text = result["result"]
+            if self._plan_file.exists() and mode == "gsd":
+                response_text += "\n\n진행하시려면 '진행해주세요'라고 답변해주세요."
+            self._assemble_outbox(file, basename, response_text, source, data)
+            await self._notify_result(source, request_text, response_text, "success")
             self._fail_count_file.unlink(missing_ok=True)
             self._cooldown_file.unlink(missing_ok=True)
             self._cooldown_alert_file.unlink(missing_ok=True)
@@ -725,6 +769,226 @@ class InboxProcessor:
             return False
 
     # ===================================================================
+    # 작업 큐 (Workqueue)
+    # ===================================================================
+    def _has_workqueue(self) -> bool:
+        """작업 큐에 대기 중인 항목이 있는지 확인한다."""
+        return bool(list(self._workqueue_dir.glob("*.json")))
+
+    def _parse_plan(self) -> list[dict]:
+        """`.gsd-plan.md`를 파싱하여 미완료 Unit 목록을 반환한다."""
+        if not self._plan_file.exists():
+            return []
+        try:
+            content = self._plan_file.read_text()
+        except OSError:
+            return []
+
+        import re
+        units = []
+        # - [ ] Unit N: 제목 형식 파싱
+        pattern = re.compile(
+            r"^- \[ \] Unit (\d+):\s*(.+?)$\n"
+            r"(?:  - 범위:\s*(.+?)$\n)?"
+            r"(?:  - 대상:\s*(.+?)$)?",
+            re.MULTILINE,
+        )
+        for match in pattern.finditer(content):
+            units.append({
+                "unit_number": int(match.group(1)),
+                "title": match.group(2).strip(),
+                "description": (match.group(3) or "").strip(),
+                "target_files": (match.group(4) or "").strip(),
+            })
+        # 패턴 매칭이 안 되면 간단한 형식 시도
+        if not units:
+            for match in re.finditer(r"^- \[ \] Unit (\d+):\s*(.+)$", content, re.MULTILINE):
+                units.append({
+                    "unit_number": int(match.group(1)),
+                    "title": match.group(2).strip(),
+                    "description": "",
+                    "target_files": "",
+                })
+        return units
+
+    def _enqueue_plan_units(self, units: list[dict], source: dict, data: dict):
+        """파싱된 Unit 목록을 workqueue/ 디렉토리에 파일로 생성한다."""
+        total = len(units)
+        for unit in units:
+            n = unit["unit_number"]
+            filename = f"{n:03d}_unit{n}.json"
+            item = {
+                "unit_number": n,
+                "total_units": total,
+                "title": unit["title"],
+                "description": unit["description"],
+                "target_files": unit["target_files"],
+                "plan_file": str(self._plan_file),
+                "source": source,
+                "keyword": data.get("keyword", ""),
+                "status": "pending",
+            }
+            tmp = self._workqueue_dir / f".{filename}.tmp"
+            tmp.write_text(json.dumps(item, ensure_ascii=False, indent=2))
+            tmp.rename(self._workqueue_dir / filename)
+        logger.info(f"작업 큐 생성: {total}개 단위")
+
+    def _clear_workqueue(self):
+        """작업 큐를 비운다."""
+        for f in self._workqueue_dir.glob("*.json"):
+            f.unlink(missing_ok=True)
+        for f in self._workqueue_dir.glob("*.json.processing"):
+            f.unlink(missing_ok=True)
+
+    async def _process_workqueue(self):
+        """작업 큐에서 다음 항목을 꺼내 실행한다."""
+        files = sorted(self._workqueue_dir.glob("*.json"))
+        if not files:
+            return
+
+        file = files[0]
+        processing_file = file.with_suffix(".json.processing")
+        try:
+            file.rename(processing_file)
+        except OSError:
+            return
+
+        try:
+            item = json.loads(processing_file.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error(f"작업 큐 파일 읽기 실패: {file.name} — {e}")
+            processing_file.unlink(missing_ok=True)
+            return
+
+        n = item["unit_number"]
+        total = item["total_units"]
+        title = item["title"]
+        description = item["description"]
+        target_files = item["target_files"]
+        source = item.get("source", {})
+        keyword = item.get("keyword", "")
+        header = _build_header(source, keyword)
+
+        await self._send_alert(
+            f"{header} Unit {n}/{total} 시작: {title}")
+
+        prompt = (
+            f"`{self._plan_file}`를 읽고 Unit {n}: '{title}'을 실행하세요.\n\n"
+            f"작업 내용: {description}\n"
+            f"대상 파일: {target_files}\n\n"
+            "## 실행 규칙\n"
+            "1. 이 단위 작업만 수행하세요 (다른 단위는 건드리지 마세요)\n"
+            f"2. 완료 후 `{self._plan_file}`에서 해당 항목을 `- [x]`로 체크하세요\n"
+            "3. 결과를 요약해서 텍스트로 출력하세요\n"
+        )
+
+        self._active_file.touch()
+        result = await self._run_claude(
+            prompt,
+            progress_label=f"Unit {n}/{total}: {title[:15]}",
+        )
+        self._track_tokens(result)
+
+        if result and result.get("subtype") == "success" and result.get("result"):
+            # 성공: 결과를 outbox로 발송
+            response_text = f"Unit {n}/{total} 완료: {title}\n\n{result['result']}"
+
+            # 남은 큐 확인
+            remaining = len(list(self._workqueue_dir.glob("*.json")))
+            if remaining == 0:
+                response_text += f"\n\n전체 완료 ({total}/{total})"
+                self._plan_file.unlink(missing_ok=True)
+                self._gsd_active_file.unlink(missing_ok=True)
+
+            self._send_workqueue_result(
+                response_text, source, keyword)
+            processing_file.unlink(missing_ok=True)
+
+            self._fail_count_file.unlink(missing_ok=True)
+            self._cooldown_file.unlink(missing_ok=True)
+            self._cooldown_alert_file.unlink(missing_ok=True)
+
+            if self._config.gsd_session_timeout_minutes > 0:
+                self._gsd_active_file.write_text(str(os.getpid()))
+
+            logger.info(f"작업 큐 Unit {n}/{total} 완료: {title}")
+        else:
+            # 실패: 복원하여 재시도
+            try:
+                processing_file.rename(file)
+            except OSError:
+                pass
+
+            fc_path = Path(str(file) + ".failcount")
+            fc = self._read_int_file(fc_path) + 1
+
+            if fc >= MAX_FILE_FAILURES:
+                # 이 Unit은 skip하고 다음으로
+                fc_path.unlink(missing_ok=True)
+                file.unlink(missing_ok=True)
+                asyncio.get_running_loop().create_task(
+                    self._send_alert(
+                        f"{header} Unit {n}/{total} 실패 ({fc}회). "
+                        f"건너뛰고 다음 단위를 진행합니다."
+                    )
+                )
+                logger.warning(f"작업 큐 Unit {n} 실패 초과, skip")
+            else:
+                self._write_int_file(fc_path, fc)
+                logger.info(f"작업 큐 Unit {n} 실패 ({fc}/{MAX_FILE_FAILURES})")
+
+            # 전역 실패 카운터
+            gfc = self._read_int_file(self._fail_count_file) + 1
+            self._write_int_file(self._fail_count_file, gfc)
+            if gfc >= MAX_GLOBAL_FAILURES:
+                retry_min = self._config.claude_cooldown_retry_minutes
+                resume_at = int(time.time()) + retry_min * 60
+                self._cooldown_file.write_text(str(resume_at))
+                self._active_file.unlink(missing_ok=True)
+                self._fail_count_file.unlink(missing_ok=True)
+                asyncio.get_running_loop().create_task(
+                    self._send_alert(
+                        f"[시스템] 연속 실패 감지. {retry_min}분 후 자동 재시도. "
+                        "즉시 재개: /resume"
+                    )
+                )
+
+    def _send_workqueue_result(self, text: str, source: dict, keyword: str):
+        """작업 큐 실행 결과를 outbox에 발송한다."""
+        now = datetime.now(KST)
+        short_id = uuid.uuid4().hex[:8]
+        filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{short_id}_wq-result.json"
+
+        header = _build_header(source, keyword)
+        headed_text = f"{header} 처리결과\n\n{text}"
+
+        if self._channel_manager:
+            targets = self._channel_manager.build_broadcast_targets(source)
+        else:
+            targets = [{
+                "channel_type": source.get("channel_type", "telegram"),
+                "channel_id": source.get("channel_id", ""),
+                "is_origin": True,
+            }]
+
+        data = {
+            "id": str(uuid.uuid4()),
+            "source": source,
+            "targets": targets,
+            "retry_count": 0,
+            "keyword": keyword,
+            "request": None,
+            "response": {
+                "text": headed_text,
+                "parse_mode": "HTML",
+                "timestamp": now.isoformat(),
+            },
+        }
+        tmp = self._config.outbox_dir / f".{filename}.tmp"
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        tmp.rename(self._config.outbox_dir / filename)
+
+    # ===================================================================
     # GSD 블로커 감지
     # ===================================================================
     def _check_gsd_blockers(self) -> str:
@@ -783,6 +1047,8 @@ class InboxProcessor:
     def clear_gsd_active(self) -> None:
         """GSD 세션 활성 상태를 해제한다."""
         self._gsd_active_file.unlink(missing_ok=True)
+        self._clear_workqueue()
+        self._plan_file.unlink(missing_ok=True)
 
     def _build_context_from_history(self, user_channel_id: str) -> str:
         """sent/ 디렉토리에서 최근 대화 이력을 읽어 맥락 문자열을 생성한다."""

@@ -33,10 +33,10 @@ GSD-Orchestrator/
 │   │   ├── telegram.py           ← TelegramAdapter (슬래시 커맨드 포함)
 │   │   └── slack.py              ← SlackAdapter (지연 임포트, Socket Mode)
 │   ├── inbox_writer.py           ← 메시지 → inbox JSON (원자적 쓰기, source 객체)
-│   ├── inbox_processor.py        ← inbox 폴링 → 분류 → Claude/GSD → outbox 조립
+│   ├── inbox_processor.py        ← inbox 폴링 → 분류 → Claude/GSD → outbox 조립 + 작업 큐 실행
 │   ├── outbox_sender.py          ← outbox 폴링 → 멀티채널 발송 (retry, snippet)
 │   └── archiver.py               ← sent/ → archive/ 이동 + 만료 삭제
-├── tests/                        ← 단위 테스트 (pytest, 45개)
+├── tests/                        ← 단위 테스트 (pytest, 122개)
 ├── config.yaml                   ← 일반 설정 (채널, 브로드캐스트, 폴링, Claude, GSD)
 ├── .env                          ← 민감 정보 (BOT_TOKEN, CHAT_ID, SLACK_TOKEN 등)
 ├── CHANGELOG.md                  ← 릴리즈 이력
@@ -52,7 +52,7 @@ GSD-Orchestrator/
 ## 설정 파일
 
 - `.env` — 민감 정보만 (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SLACK_BOT_TOKEN, SLACK_APP_TOKEN)
-- `config.yaml` — 채널 설정(telegram/slack), 브로드캐스트(snippet_length), 폴링 간격, 보관 기간, Claude timeout/cooldown, GSD 설정
+- `config.yaml` — 채널 설정(telegram/slack), 브로드캐스트(snippet_length), 폴링 간격, 보관 기간, Claude timeout/cooldown, GSD 설정(작업 큐, 세션 유지), 알림 무음
 
 ## 실행
 

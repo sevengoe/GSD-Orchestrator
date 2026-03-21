@@ -50,3 +50,5 @@ paths:
   sent_dir: messages/sent
   error_dir: messages/error
   archive_dir: messages/archive
+  workqueue_dir: messages/workqueue
+  plan_dir: messages/plan

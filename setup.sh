@@ -55,7 +55,7 @@ else
 fi
 
 # 디렉토리 생성
-mkdir -p messages/{inbox,outbox,sent,error,archive} logs
+mkdir -p messages/{inbox,outbox,sent,error,archive,workqueue,plan} logs
 echo "✓ 디렉토리 생성"
 
 echo ""

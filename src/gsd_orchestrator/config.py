@@ -68,6 +68,8 @@ class Config:
     sent_dir: Path
     error_dir: Path
     archive_dir: Path
+    workqueue_dir: Path
+    plan_dir: Path
 
     # instance
     instance_id: str = ""
@@ -141,6 +143,8 @@ class Config:
             sent_dir=base_dir / cfg["paths"]["sent_dir"],
             error_dir=base_dir / cfg["paths"]["error_dir"],
             archive_dir=base_dir / cfg["paths"]["archive_dir"],
+            workqueue_dir=base_dir / cfg["paths"].get("workqueue_dir", "messages/workqueue"),
+            plan_dir=base_dir / cfg["paths"].get("plan_dir", "messages/plan"),
             # instance
             instance_id=instance_id,
         )
