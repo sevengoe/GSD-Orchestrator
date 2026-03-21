@@ -65,7 +65,7 @@ vi .env                 # 봇 토큰 설정
 ./start.sh              # 실행
 ```
 
-> 중지할 때는 `./stop.sh`, 실시간 로그를 볼 때는 `tail -f logs/gsd-orchestrator.log`를 사용하세요.
+> 중지할 때는 `./stop.sh`, 실시간 로그를 볼 때는 `logs.sh`를 사용하세요.
 
 ---
 
@@ -77,7 +77,7 @@ vi .env                 # 봇 토큰 설정
 [수신] 텔레그램/슬랙 → ChannelManager/Orchestrator → "확인 ✓" 응답 + inbox/{ts}.json 생성
 [분류] inbox_processor (10초 폴링) → 경량 모델 분류 ("simple" or "gsd")
 [처리] claude -p --dangerously-skip-permissions (즉답 또는 GSD 자율 코딩 작업)
-[보고] 30초 간격 중간 진행 알림 발송 (텔레그램/슬랙)
+[보고] 1분 간격 중간 진행 알림 발송 (텔레그램/슬랙)
 [발송] outbox_sender (3초 폴링) → 멀티 타겟 채널별 분할 및 요약 처리 발송 → sent/ 로 이동
 [보관] archiver (매시간) → 보관소(archive/) 적재 후 기간 만료 시 영구 삭제
 [복구] 실패 시 자동 재시도 → 최대 재시도 초과 시 격리, 쿨다운(Cooldown) 제어
