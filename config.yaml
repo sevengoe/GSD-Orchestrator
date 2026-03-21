@@ -13,7 +13,7 @@ broadcast:
 polling:
   inbox_check_interval: 10
   outbox_interval: 3
-  progress_interval: 30
+  progress_interval: 60
 
 archive:
   message_retention_days: 30

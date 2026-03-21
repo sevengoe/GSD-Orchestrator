@@ -226,13 +226,12 @@ class InboxProcessor:
                 if classified == "gsd":
                     mode = "gsd"
 
-        resumed = not self._active_file.exists()
         self._active_file.touch()
 
         if mode in ("gsd", "gsd-resume"):
-            await self._process_gsd(file, basename, data, mode, request_text, resumed, source)
+            await self._process_gsd(file, basename, data, mode, request_text, source)
         else:
-            await self._process_simple(file, basename, data, request_text, resumed, source)
+            await self._process_simple(file, basename, data, request_text, source)
 
     # ===================================================================
     # Claude 기반 자동 분류
@@ -256,7 +255,7 @@ class InboxProcessor:
     # Simple Track
     # ===================================================================
     async def _process_simple(self, file: Path, basename: str, data: dict,
-                              request_text: str, resumed: bool, source: dict):
+                              request_text: str, source: dict):
         continue_flag = True
         if self._reset_file.exists():
             continue_flag = False
@@ -289,8 +288,6 @@ class InboxProcessor:
             self._cooldown_file.unlink(missing_ok=True)
             self._cooldown_alert_file.unlink(missing_ok=True)
 
-            if resumed:
-                await self._send_alert("[시스템] 작업을 다시 시작했습니다.")
         else:
             self._track_tokens(result)
             error_msg = (result or {}).get("result", "처리 실패")
@@ -301,7 +298,7 @@ class InboxProcessor:
     # GSD Track
     # ===================================================================
     async def _process_gsd(self, file: Path, basename: str, data: dict,
-                           mode: str, request_text: str, resumed: bool, source: dict):
+                           mode: str, request_text: str, source: dict):
         if not self._config.gsd_enabled:
             self._assemble_outbox(file, basename,
                 "GSD가 비활성화 상태입니다. config.yaml에서 gsd.enabled를 true로 설정해주세요.",
@@ -365,8 +362,6 @@ class InboxProcessor:
             self._fail_count_file.unlink(missing_ok=True)
             self._cooldown_file.unlink(missing_ok=True)
             self._cooldown_alert_file.unlink(missing_ok=True)
-            if resumed:
-                await self._send_alert("[시스템] 작업을 다시 시작했습니다.")
         else:
             error_msg = (result or {}).get("result", "GSD 처리 실패")
             await self._notify_result(source, request_text, error_msg, "error")

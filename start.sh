@@ -1,5 +1,5 @@
 #!/bin/bash
-# GSD Orchestrator 시작
+# GSD Orchestrator 시작 (백그라운드 데몬)
 # 사용법: ./start.sh
 # 최초 실행 시: ./setup.sh 먼저 실행
 set -euo pipefail
@@ -9,6 +9,7 @@ PROJECT_DIR="$(pwd)"
 VENV_DIR="${PROJECT_DIR}/.venv"
 INSTANCE_ID=$(echo -n "$(pwd)" | md5 -q | cut -c1-8)
 PID_FILE="/tmp/gsd-orchestrator-${INSTANCE_ID}.pid"
+LOG_DIR="${PROJECT_DIR}/logs"
 
 # setup.sh 실행 여부 확인
 if [ ! -d "$VENV_DIR" ]; then
@@ -58,9 +59,12 @@ rm -f "/tmp/gsd-orchestrator-${INSTANCE_ID}.cooldown" \
       "/tmp/gsd-orchestrator-${INSTANCE_ID}.failcount" \
       "/tmp/gsd-orchestrator-${INSTANCE_ID}.lock"
 
-# 시작
-echo "GSD Orchestrator v0.5.0 시작 (PID: $$, instance: ${INSTANCE_ID})"
-echo $$ > "$PID_FILE"
-trap "rm -f $PID_FILE" EXIT
+# 로그 디렉토리 생성
+mkdir -p "$LOG_DIR"
 
-exec python -m gsd_orchestrator
+# 백그라운드 데몬으로 시작 (터미널 종료에도 유지)
+# 로그는 Python 내부 파일 핸들러가 처리
+nohup python -m gsd_orchestrator > /dev/null 2>&1 &
+PID=$!
+echo "$PID" > "$PID_FILE"
+echo "GSD Orchestrator v0.5.0 시작 (PID: $PID, instance: ${INSTANCE_ID})"
