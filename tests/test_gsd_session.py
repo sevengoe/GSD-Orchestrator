@@ -474,6 +474,94 @@ class TestClearGsdActive:
         processor.clear_gsd_active()  # should not raise
 
 
+# ── Simple Track 세션 리셋 맥락 복원 ──────────────────────────
+
+
+class TestSimpleTrackContextRestore:
+    @pytest.mark.asyncio
+    async def test_simple_reset_injects_history(self, setup):
+        """Simple Track 세션 리셋 시 sent/ 이력이 프롬프트에 주입된다."""
+        processor = setup["processor"]
+        inbox = setup["inbox"]
+        sent = setup["sent"]
+
+        # sent/에 이전 대화 이력 생성
+        _make_sent_file(sent, "001_prev.json",
+                        request_text="이전 질문", response_text="이전 답변")
+
+        # turn_count를 max(20) 이상으로 설정하여 세션 리셋 유도
+        processor._write_int_file(processor._turn_count_file, 20)
+
+        _make_inbox_file(inbox, "reset_test.json", text="새 질문")
+
+        captured_prompt = None
+        original_run = processor._run_claude
+
+        async def capture_run(prompt, **kwargs):
+            nonlocal captured_prompt
+            captured_prompt = prompt
+            return _claude_success("응답 완료")
+
+        with patch.object(processor, "_run_claude", side_effect=capture_run):
+            await processor._process_inbox()
+
+        assert captured_prompt is not None
+        assert "이전 대화 맥락을 참고하여 답변하세요" in captured_prompt
+        assert "이전 질문" in captured_prompt
+        assert "이전 답변" in captured_prompt
+        assert "새 질문" in captured_prompt
+
+    @pytest.mark.asyncio
+    async def test_simple_continue_no_history_injection(self, setup):
+        """Simple Track 세션 유지 시 이력 주입 없이 원본 텍스트만 전달된다."""
+        processor = setup["processor"]
+        inbox = setup["inbox"]
+        sent = setup["sent"]
+
+        _make_sent_file(sent, "002_prev.json",
+                        request_text="이전 질문", response_text="이전 답변")
+
+        # turn_count = 0이면 continue_flag = True → 이력 주입 없음
+        processor._write_int_file(processor._turn_count_file, 0)
+
+        _make_inbox_file(inbox, "continue_test.json", text="일반 질문")
+
+        captured_prompt = None
+
+        async def capture_run(prompt, **kwargs):
+            nonlocal captured_prompt
+            captured_prompt = prompt
+            return _claude_success("응답 완료")
+
+        with patch.object(processor, "_run_claude", side_effect=capture_run):
+            await processor._process_inbox()
+
+        assert captured_prompt == "일반 질문"
+
+    @pytest.mark.asyncio
+    async def test_simple_reset_no_history_uses_original(self, setup):
+        """Simple Track 세션 리셋이지만 이력이 없으면 원본 텍스트만 전달된다."""
+        processor = setup["processor"]
+        inbox = setup["inbox"]
+
+        # sent/ 비어있음 → 이력 없음
+        processor._write_int_file(processor._turn_count_file, 20)
+
+        _make_inbox_file(inbox, "no_hist.json", text="이력없는 질문")
+
+        captured_prompt = None
+
+        async def capture_run(prompt, **kwargs):
+            nonlocal captured_prompt
+            captured_prompt = prompt
+            return _claude_success("응답 완료")
+
+        with patch.object(processor, "_run_claude", side_effect=capture_run):
+            await processor._process_inbox()
+
+        assert captured_prompt == "이력없는 질문"
+
+
 # ── 정리 ─────────────────────────────────────────────────────
 
 

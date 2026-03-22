@@ -283,8 +283,21 @@ class InboxProcessor:
                 f"[시스템] 세션이 자동 리셋되었습니다. ({self._config.claude_max_session_turns}건 처리 완료)"
             )
 
+        # 세션 리셋 시 sent/ 이력으로 맥락 복원
+        prompt = request_text
+        if not continue_flag:
+            channel_id = source.get("channel_id", "")
+            context = self._build_context_from_history(channel_id)
+            if context:
+                logger.info("Simple Track 세션 리셋 — sent/ 이력으로 맥락 복원")
+                prompt = (
+                    f"이전 대화 맥락을 참고하여 답변하세요.\n\n"
+                    f"{context}\n\n"
+                    f"사용자의 새 메시지: {request_text}"
+                )
+
         result = await self._run_claude(
-            request_text,
+            prompt,
             continue_session=continue_flag,
             progress_label=request_text[:30],
         )
