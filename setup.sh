@@ -39,6 +39,26 @@ else
     echo "  brew install claude-code 또는 npm install -g @anthropic-ai/claude-code"
 fi
 
+# GSD 슬래시 커맨드 설치 (auto_classify에 필요)
+GSD_CMD_DIR="${HOME}/.claude/commands/gsd"
+if [ -d "$GSD_CMD_DIR" ]; then
+    echo "✓ GSD 슬래시 커맨드 설치됨"
+else
+    if command -v npx &>/dev/null; then
+        echo "GSD 슬래시 커맨드 설치 중..."
+        npx get-shit-done-cc --claude --global
+        if [ -d "$GSD_CMD_DIR" ]; then
+            echo "✓ GSD 슬래시 커맨드 설치 완료"
+        else
+            echo "⚠ GSD 슬래시 커맨드 설치 실패 — 수동으로 실행하세요:"
+            echo "  npx get-shit-done-cc --claude --global"
+        fi
+    else
+        echo "⚠ npx를 찾을 수 없습니다. Node.js 설치 후 GSD를 수동 설치하세요:"
+        echo "  npx get-shit-done-cc --claude --global"
+    fi
+fi
+
 # venv 생성 (ensurepip 실패 시 --without-pip fallback)
 if [ ! -d "$VENV_DIR" ]; then
     echo "Python 가상환경 생성 중..."
