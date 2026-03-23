@@ -65,6 +65,9 @@ class InboxProcessor:
         self._cooldown_alert_file = config.runtime_path("cooldown-alerted")
         self._gsd_active_file = config.runtime_path("gsd-active")
 
+        # 보안 룰 (프롬프트 주입용)
+        self._security_rules = self._load_security_rules()
+
         # 작업 큐
         self._workqueue_dir = config.workqueue_dir
         self._workqueue_dir.mkdir(parents=True, exist_ok=True)
@@ -74,6 +77,25 @@ class InboxProcessor:
 
     def set_result_callback(self, callback: ResultCallback | None) -> None:
         self._result_callback = callback
+
+    def _load_security_rules(self) -> str:
+        """working_dir 또는 프로젝트 루트의 SECURITY_RULES.md를 로드한다."""
+        for candidate in [
+            self._working_dir / "SECURITY_RULES.md",
+            Path(self._config.claude_working_dir).parent / "SECURITY_RULES.md",
+        ]:
+            if candidate.exists():
+                try:
+                    return candidate.read_text().strip()
+                except OSError:
+                    pass
+        return ""
+
+    def _apply_security_rules(self, prompt: str) -> str:
+        """보안 룰이 있으면 프롬프트 최상단에 주입한다."""
+        if self._security_rules:
+            return f"{self._security_rules}\n\n---\n\n{prompt}"
+        return prompt
 
     async def _notify_result(self, source: dict, request_text: str,
                              response_text: str, status: str) -> None:
@@ -467,6 +489,10 @@ class InboxProcessor:
                           model: str | None = None,
                           ephemeral: bool = False,
                           progress_label: str | None = None) -> dict | None:
+        # 보안 룰 주입 (분류 호출 제외)
+        if not ephemeral:
+            prompt = self._apply_security_rules(prompt)
+
         cmd = ["claude", "-p", prompt, "--output-format", "json",
                "--dangerously-skip-permissions"]
         if continue_session:
