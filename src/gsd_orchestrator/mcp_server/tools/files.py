@@ -1,4 +1,8 @@
+import json
 import os
+import shutil
+import stat
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -57,3 +61,45 @@ def register_tools(mcp: FastMCP, validate_path: Callable[[str], Path]) -> None:
         p = validate_path(path)
         p.mkdir(parents=True, exist_ok=True)
         return f"Created directory: {p}"
+
+    @mcp.tool()
+    def get_file_info(path: str) -> str:
+        """Return metadata for a file or directory: size, type, permissions, timestamps."""
+        p = validate_path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Path does not exist: '{p}'")
+        s = p.stat()
+        info = {
+            "path": str(p),
+            "size": s.st_size,
+            "type": "directory" if p.is_dir() else "file",
+            "permissions": oct(stat.S_IMODE(s.st_mode)),
+            "created": datetime.fromtimestamp(s.st_ctime).isoformat(),
+            "modified": datetime.fromtimestamp(s.st_mtime).isoformat(),
+            "accessed": datetime.fromtimestamp(s.st_atime).isoformat(),
+        }
+        return json.dumps(info, indent=2)
+
+    @mcp.tool()
+    def move_file(source: str, destination: str) -> str:
+        """Move a file or directory. Both source and destination must be within allowed directories."""
+        src = validate_path(source)
+        dst = validate_path(destination)
+        if not src.exists():
+            raise FileNotFoundError(f"Source not found: '{src}'")
+        if dst.exists():
+            raise FileExistsError(f"Destination already exists: '{dst}'. Will not overwrite.")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+        return f"Moved '{src}' to '{dst}'"
+
+    @mcp.tool()
+    def delete_file(path: str) -> str:
+        """Delete a single file. Directories cannot be deleted with this tool."""
+        p = validate_path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"File not found: '{p}'")
+        if p.is_dir():
+            raise IsADirectoryError(f"Cannot delete directory: '{p}'. Use this tool for files only.")
+        p.unlink()
+        return f"Deleted file: '{p}'"
