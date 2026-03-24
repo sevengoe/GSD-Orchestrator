@@ -8,6 +8,11 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 from .base import ChannelAdapter
+from ..attachment_handler import (
+    validate_file, download_file_telegram, extract_text,
+    build_metadata, cleanup_temp_file,
+)
+from ..text_cleaner import clean_text
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +20,19 @@ logger = logging.getLogger(__name__)
 class TelegramAdapter(ChannelAdapter):
     """Telegram 채널 어댑터. python-telegram-bot 기반."""
 
-    def __init__(self, bot_token: str, chat_id: str, runtime_paths: dict[str, Path] | None = None):
+    def __init__(self, bot_token: str, chat_id: str,
+                 runtime_paths: dict[str, Path] | None = None,
+                 attachments_config: dict | None = None):
         self._bot_token = bot_token
         self._chat_id = chat_id
         self._app: Application | None = None
         self._on_message_callback: Callable[..., Awaitable[None]] | None = None
+        # 첨부파일 설정
+        att = attachments_config or {}
+        self._att_allowed_ext: list[str] = att.get("allowed_extensions", ["txt", "md", "pdf"])
+        self._att_max_size: int = att.get("max_file_size", 1_048_576)
+        self._att_temp_dir: Path = att.get("temp_dir", Path("messages/attachments"))
+        self._att_reject_msg: str = att.get("reject_message", "txt, md, pdf 파일만 지원합니다.")
         # 인스턴스별 런타임 파일 경로
         paths = runtime_paths or {}
         self._blocked_file = paths.get("blocked", Path("/tmp/gsd-orchestrator.blocked"))
@@ -59,6 +72,9 @@ class TelegramAdapter(ChannelAdapter):
         self._app.add_handler(CommandHandler("gsd", self._on_gsd))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
+        )
+        self._app.add_handler(
+            MessageHandler(filters.Document.ALL, self._on_document)
         )
 
         await self._app.initialize()
@@ -133,6 +149,74 @@ class TelegramAdapter(ChannelAdapter):
 
         if self._on_message_callback:
             await self._on_message_callback(source=source, text=text)
+
+    async def _on_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """첨부파일(Document) 수신 핸들러."""
+        if not update.message or not update.message.document:
+            return
+        if not self._is_allowed(update):
+            return
+        user = update.effective_user
+        if user and user.is_bot:
+            return
+
+        doc = update.message.document
+        file_name = doc.file_name or "unknown"
+        file_size = doc.file_size or 0
+
+        # 화이트리스트 / 크기 검증
+        reject = validate_file(
+            file_name, file_size,
+            self._att_allowed_ext, self._att_max_size, self._att_reject_msg,
+        )
+        if reject:
+            await update.message.reply_text(reject)
+            return
+
+        # 다운로드 → 텍스트 추출 → 정제
+        local_path = None
+        try:
+            local_path = await download_file_telegram(
+                self._app.bot, doc.file_id, self._att_temp_dir,
+            )
+            raw_text = extract_text(local_path, file_name)
+
+            if raw_text.startswith("[오류]"):
+                await update.message.reply_text(raw_text)
+                return
+
+            ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+            cleaned_text, summary = clean_text(raw_text, ext)
+
+            # 확인 메시지 발송
+            caption = update.message.caption or ""
+            preview = cleaned_text[:1000]
+            if len(cleaned_text) > 1000:
+                preview += "\n… (이하 생략)"
+            confirm_msg = (
+                f"📎 {file_name} — 텍스트 추출 완료\n"
+                f"(원본 {summary['original_length']:,}자 → 정제 후 {summary['cleaned_length']:,}자)\n\n"
+                f"{preview}\n\n"
+                f"아래 내용이 맞는지 확인해주세요. 이어서 메시지를 보내시면 해당 내용과 함께 처리됩니다."
+            )
+            await update.message.reply_text(confirm_msg)
+
+            # source에 메타데이터 포함하여 콜백 호출
+            source = self._build_source(update)
+            metadata = build_metadata(file_name, file_size)
+            source["attachments"] = [metadata]
+
+            text = caption if caption else f"[첨부파일: {file_name}]"
+            if self._on_message_callback:
+                await self._on_message_callback(
+                    source=source, text=text, extracted_text=cleaned_text,
+                )
+        except Exception as e:
+            logger.error(f"첨부파일 처리 실패 [{file_name}]: {e}")
+            await update.message.reply_text(f"첨부파일 처리 중 오류가 발생했습니다: {e}")
+        finally:
+            if local_path:
+                cleanup_temp_file(local_path)
 
     # ── 슬래시 커맨드 ──────────────────────────────────────
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.0] - 2026-03-24
+
+### Added
+- **첨부파일 수신 및 텍스트 추출**: 텔레그램/슬랙에서 txt, md, pdf 파일 첨부 시 자동 텍스트 추출
+- `attachment_handler.py`: 화이트리스트 검증, 파일 다운로드, 텍스트 추출(pdfminer.six), 메타데이터 생성
+- `text_cleaner.py`: 추출 텍스트 정제 (공백/헤더/푸터/페이지번호 제거, PDF 특화 정제)
+- `config.yaml` `attachments` 섹션: 허용 확장자, 최대 파일 크기(1MB), 임시 경로, 거부 메시지 템플릿
+- 텔레그램 어댑터: Document 핸들러(`_on_document`) 추가
+- 슬랙 어댑터: `file_shared` 이벤트 핸들러 추가
+- `inbox_writer`: `attachments[]` 메타데이터 + `extracted_text` 필드 지원
+- `inbox_processor`: extracted_text가 있으면 Claude 프롬프트에 `[첨부파일: {파일명}]` 형태로 삽입
+- PDF 실패 유형별 안내: 암호화 PDF, 이미지 전용 PDF, 구문 오류, pdfminer 미설치
+- `pdfminer.six>=20231228` 의존성 추가
+- `test_attachment_handler.py`: 28개 단위 테스트 (화이트리스트, PDF 추출 성공/실패, 메타데이터, 파일 정리)
+- `test_text_cleaner.py`: 18개 단위 테스트 (공통 정제, PDF 특화 정제, 파일 타입 격리 검증)
+
+---
+
 ## [0.5.0] - 2026-03-21
 
 ### Added

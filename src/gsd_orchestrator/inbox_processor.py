@@ -242,7 +242,14 @@ class InboxProcessor:
 
         mode = data.get("mode", "default")
         request_text = data.get("request", {}).get("text", "")
+        extracted_text = data.get("request", {}).get("extracted_text", "")
         source = data.get("source", {})
+
+        # 첨부파일 텍스트가 있으면 프롬프트에 삽입
+        if extracted_text:
+            attachments = data.get("request", {}).get("attachments", [])
+            file_label = attachments[0].get("filename", "첨부파일") if attachments else "첨부파일"
+            request_text = f"{request_text}\n\n[첨부파일: {file_label}]\n{extracted_text}"
 
         # 하위 호환: source 없으면 chat_id로 생성
         if not source:

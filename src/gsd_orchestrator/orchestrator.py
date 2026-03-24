@@ -49,6 +49,12 @@ class Orchestrator:
                 bot_token=config.telegram_bot_token,
                 chat_id=config.telegram_chat_id,
                 runtime_paths=runtime_paths,
+                attachments_config={
+                    "allowed_extensions": config.attachments_allowed_extensions,
+                    "max_file_size": config.attachments_max_file_size,
+                    "temp_dir": config.attachments_temp_dir,
+                    "reject_message": config.attachments_reject_message,
+                },
             ))
 
         if config.slack_enabled and config.slack_bot_token:
@@ -58,6 +64,12 @@ class Orchestrator:
                     bot_token=config.slack_bot_token,
                     app_token=config.slack_app_token,
                     channel_id=config.slack_channel_id,
+                    attachments_config={
+                        "allowed_extensions": config.attachments_allowed_extensions,
+                        "max_file_size": config.attachments_max_file_size,
+                        "temp_dir": config.attachments_temp_dir,
+                        "reject_message": config.attachments_reject_message,
+                    },
                 ))
             except ImportError as e:
                 logger.error(f"Slack 어댑터 로드 실패: {e}")
@@ -110,7 +122,8 @@ class Orchestrator:
     # ── 메시지 핸들링 ────────────────────────────────────
 
     async def _on_channel_message(self, source: dict, text: str,
-                                  mode: str = "default") -> None:
+                                  mode: str = "default",
+                                  extracted_text: str = "") -> None:
         """모든 채널 어댑터의 공통 메시지 콜백."""
         logger.info(f"[수신] [{source.get('channel_type')}] {text}")
         pending = self._inbox_writer.pending_count()
@@ -136,7 +149,8 @@ class Orchestrator:
 
         # GSD 블로킹 상태에서 사용자 응답 → gsd-resume
         if mode == "default" and self._blocked_file.exists():
-            self._inbox_writer.write(source, text, mode="gsd-resume")
+            self._inbox_writer.write(source, text, mode="gsd-resume",
+                                     extracted_text=extracted_text)
             try:
                 self._blocked_file.unlink()
             except OSError:
@@ -152,7 +166,8 @@ class Orchestrator:
 
         # GSD 세션 활성 상태에서 사용자 응답 → gsd-resume (세션 이어가기)
         if mode == "default" and self._inbox_processor.is_gsd_active():
-            self._inbox_writer.write(source, text, mode="gsd-resume")
+            self._inbox_writer.write(source, text, mode="gsd-resume",
+                                     extracted_text=extracted_text)
             if pending > 0:
                 msg = f"{header} GSD 작업 이어서 진행합니다. (앞선 작업 {pending}건 처리 중)"
             else:
@@ -165,7 +180,8 @@ class Orchestrator:
         # inbox 저장 (delay_notice는 source에 포함하여 inbox_processor에서 활용)
         if delay_notice:
             source["delay_notice"] = delay_notice
-        self._inbox_writer.write(source, text, mode=mode)
+        self._inbox_writer.write(source, text, mode=mode,
+                                 extracted_text=extracted_text)
 
         # 수신 확인은 inbox_processor가 .processing 전환 시 발송
 

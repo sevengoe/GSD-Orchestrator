@@ -19,7 +19,8 @@ class InboxWriter:
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def write(self, source: dict | str, message_id_or_text: int | str = 0,
-              text: str = "", mode: str = "default") -> Path:
+              text: str = "", mode: str = "default",
+              extracted_text: str = "") -> Path:
         """inbox에 메시지를 원자적으로 저장한다.
 
         새 형식: write(source_dict, text, mode=...)
@@ -61,6 +62,8 @@ class InboxWriter:
             "request": {
                 "text": actual_text,
                 "timestamp": now.isoformat(),
+                "attachments": source_obj.get("attachments", []),
+                "extracted_text": extracted_text,
             },
             "response": None,
         }
