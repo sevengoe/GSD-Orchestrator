@@ -3,6 +3,9 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from .tools.files import register_tools
+from .tools.search import register_search_tools
+from .tools.tree import register_tree_tools
+from .tools.batch import register_batch_tools
 
 logger = logging.getLogger(__name__)
 
@@ -30,4 +33,7 @@ def create_server(allowed_dirs: list[str]) -> FastMCP:
         )
 
     register_tools(mcp, validate_path)
+    register_search_tools(mcp, validate_path)
+    register_tree_tools(mcp, validate_path)
+    register_batch_tools(mcp, validate_path, resolved_dirs)
     return mcp
