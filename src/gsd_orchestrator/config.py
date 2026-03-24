@@ -58,6 +58,10 @@ class Config:
     gsd_session_timeout_minutes: int
     gsd_history_max_messages: int
 
+    # mcp
+    mcp_enabled: bool
+    mcp_config_path: str
+
     # alert
     alert_quiet_start: int  # 알림 무음 시작 시각 (0~23, -1이면 비활성)
     alert_quiet_end: int    # 알림 무음 종료 시각 (0~23)
@@ -73,6 +77,12 @@ class Config:
 
     # instance
     instance_id: str = ""
+
+    # attachments
+    attachments_allowed_extensions: list = field(default_factory=lambda: ["txt", "md", "pdf"])
+    attachments_max_file_size: int = 1_048_576  # 1MB
+    attachments_temp_dir: Path = Path("messages/attachments")
+    attachments_reject_message: str = "txt, md, pdf 파일만 지원합니다."
 
     def runtime_path(self, name: str) -> Path:
         """인스턴스별 런타임 파일 경로를 반환한다. /tmp/gsd-orchestrator-{hash}.{name}"""
@@ -134,6 +144,14 @@ class Config:
             gsd_classify_model=cfg.get("gsd", {}).get("classify_model", "haiku"),
             gsd_session_timeout_minutes=cfg.get("gsd", {}).get("session_timeout_minutes", 30),
             gsd_history_max_messages=cfg.get("gsd", {}).get("history_max_messages", 3),
+            # mcp
+            mcp_enabled=cfg.get("mcp", {}).get("enabled", False),
+            mcp_config_path=str(base_dir / "mcp-config.json"),
+            # attachments
+            attachments_allowed_extensions=cfg.get("attachments", {}).get("allowed_extensions", ["txt", "md", "pdf"]),
+            attachments_max_file_size=cfg.get("attachments", {}).get("max_file_size", 1_048_576),
+            attachments_temp_dir=base_dir / cfg.get("attachments", {}).get("temp_dir", "messages/attachments"),
+            attachments_reject_message=cfg.get("attachments", {}).get("reject_message", "txt, md, pdf 파일만 지원합니다."),
             # alert
             alert_quiet_start=cfg.get("alert", {}).get("quiet_start", -1),
             alert_quiet_end=cfg.get("alert", {}).get("quiet_end", -1),

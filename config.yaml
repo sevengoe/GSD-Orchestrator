@@ -14,6 +14,15 @@ alert:
   quiet_start: -1                  # 알림 무음 시작 시각 (0~23, -1이면 비활성)
   quiet_end: -1                    # 알림 무음 종료 시각 (0~23, 예: quiet_start: 23, quiet_end: 6 → 23시~06시 무음)
 
+attachments:
+  allowed_extensions:
+    - txt
+    - md
+    - pdf
+  max_file_size: 1048576                # 최대 파일 크기 (바이트, 1MB)
+  temp_dir: messages/attachments
+  reject_message: "txt, md, pdf 파일만 지원합니다."
+
 polling:
   inbox_check_interval: 10
   outbox_interval: 3
@@ -43,6 +52,10 @@ gsd:
   classify_model: haiku
   session_timeout_minutes: 30     # GSD 세션 유지 시간 (0이면 즉시 종료)
   history_max_messages: 3          # 세션 유실 시 이력 복원 최대 메시지 수
+
+mcp:
+  enabled: true
+  allowed_directories: []    # 비어있으면 claude.working_dir 기본 사용
 
 paths:
   inbox_dir: messages/inbox
