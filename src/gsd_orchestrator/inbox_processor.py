@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
+import signal
 import subprocess
 import time
 import uuid
@@ -262,6 +264,12 @@ class InboxProcessor:
                 "thread_ts": None,
             }
 
+        # 자기 자신의 재시작/중지 명령 감지 → Claude 우회, 직접 처리
+        self_cmd = self._detect_self_command(request_text)
+        if self_cmd:
+            await self._handle_self_command(file, basename, self_cmd, source, data)
+            return
+
         if mode == "default" and self._config.gsd_auto_classify:
             if self._config.gsd_enabled and self._gsd_commands_dir:
                 classified = await self._classify_request(request_text)
@@ -274,6 +282,63 @@ class InboxProcessor:
             await self._process_gsd(file, basename, data, mode, request_text, source)
         else:
             await self._process_simple(file, basename, data, request_text, source)
+
+    # ===================================================================
+    # 자기 프로세스 관리 명령 (재시작/중지) — Claude 우회
+    # ===================================================================
+    _SELF_CMD_PATTERNS = [
+        (re.compile(r"(gsd.?orchestrator|오케스트레이터|봇).{0,10}(재시작|restart|리스타트)", re.I), "restart"),
+        (re.compile(r"(재시작|restart|리스타트).{0,10}(gsd.?orchestrator|오케스트레이터|봇)", re.I), "restart"),
+        (re.compile(r"(gsd.?orchestrator|오케스트레이터|봇).{0,10}(중지|stop|종료|꺼)", re.I), "stop"),
+        (re.compile(r"(중지|stop|종료|꺼).{0,10}(gsd.?orchestrator|오케스트레이터|봇)", re.I), "stop"),
+    ]
+
+    def _detect_self_command(self, text: str) -> str | None:
+        """재시작/중지 등 자기 프로세스 관리 요청이면 명령어를 반환한다."""
+        for pattern, cmd in self._SELF_CMD_PATTERNS:
+            if pattern.search(text):
+                return cmd
+        return None
+
+    async def _handle_self_command(self, file: Path, basename: str,
+                                   cmd: str, source: dict, data: dict):
+        """자기 관리 명령을 안전하게 처리: 응답 저장 → 프로세스 종료/재시작."""
+        project_dir = Path(self._config.claude_working_dir).parent
+
+        if cmd == "restart":
+            script = project_dir / "restart.sh"
+            response = "GSD-Orchestrator를 재시작합니다."
+        else:  # stop
+            script = project_dir / "stop.sh"
+            response = "GSD-Orchestrator를 중지합니다."
+
+        if not script.exists():
+            self._assemble_outbox(file, basename,
+                                  f"{script.name}을 찾을 수 없습니다.", source, data)
+            return
+
+        # 1) 응답을 outbox에 저장 (처리 완료 상태로 전환)
+        self._assemble_outbox(file, basename, response, source, data)
+        logger.info(f"자기 관리 명령 '{cmd}' — outbox 저장 완료, 실행 대기")
+
+        # 2) outbox_sender가 발송할 시간을 확보한 뒤 실행
+        await asyncio.sleep(2)
+
+        # 3) 스크립트 실행 (재시작 시 자신이 죽으므로 subprocess.Popen으로 비동기 실행)
+        logger.info(f"자기 관리 명령 실행: {script}")
+        subprocess.Popen(
+            ["bash", str(script)],
+            cwd=str(project_dir),
+            start_new_session=True,
+        )
+
+        # stop/restart 스크립트가 이 프로세스를 종료하므로 여기서 대기
+        if cmd == "restart":
+            await asyncio.sleep(30)
+        else:
+            # stop의 경우 스크립트가 종료시켜줌, 안전장치로 직접 종료
+            await asyncio.sleep(5)
+            os.kill(os.getpid(), signal.SIGTERM)
 
     # ===================================================================
     # Claude 기반 자동 분류
