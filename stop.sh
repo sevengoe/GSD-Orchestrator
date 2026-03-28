@@ -19,10 +19,25 @@ kill_tree() {
     fi
 }
 
+# 종료 전 .processing 파일 복원 (재시작 시 실패 카운트 방지)
+restore_processing_files() {
+    local dir="$1"
+    if [ -d "$dir" ]; then
+        for f in "$dir"/*.json.processing; do
+            [ -f "$f" ] || continue
+            local original="${f%.processing}"
+            mv "$f" "$original" 2>/dev/null && \
+                echo "  복원: $(basename "$original")"
+        done
+    fi
+}
+
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
         echo "GSD Orchestrator 프로세스 트리 종료 (PID: $PID, instance: $INSTANCE_ID)"
+        restore_processing_files "messages/inbox"
+        restore_processing_files "messages/workqueue"
         kill_tree "$PID"
         sleep 2
         # 아직 살아있으면 강제 종료
