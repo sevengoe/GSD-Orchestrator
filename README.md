@@ -40,6 +40,37 @@ Claude Code가 파일을 직접 조작하는 대신, **MCP(Model Context Protoco
 
 ---
 
+## 🆚 Claude Dispatch와 무엇이 다른가?
+
+Anthropic이 2026년 3월 출시한 [Claude Dispatch](https://claude.com/blog/dispatch-and-computer-use)는 스마트폰에서 데스크톱의 Claude에게 원격으로 작업을 지시하는 기능입니다. 컨셉은 유사하지만, 아키텍처와 대상이 근본적으로 다릅니다.
+
+| 비교 항목 | Claude Dispatch | GSD Orchestrator |
+|------|------|------|
+| **연결 구조** | 폰 1대 ↔ 데스크톱 1대 (1:1 페어링) | **N명 사용자 → N개 서버/인스턴스** (허브 구조) |
+| **동시 프로젝트** | 단일 스레드, 멀티 스레드 불가 | **메시지 단위 독립 처리 + 작업 큐 병렬** |
+| **채널** | Claude 앱 전용 (iOS/Android → Desktop) | **Telegram + Slack** 동시 운영 + 크로스채널 브로드캐스트 |
+| **플랫폼** | macOS/Windows 전용 (Linux 미지원) | **Linux/macOS/VPS 어디서든** (headless Python) |
+| **커스터마이징** | 제한적 (MCP 커넥터 수준) | **분류 로직, 라우팅, 큐, 아카이빙 완전 커스텀** |
+| **실행 엔진** | Claude Desktop/Cowork 앱 | Claude Code headless (`claude -p`) |
+| **Computer Use** | GUI 앱 직접 조작 — macOS만 지원 | CLI/코드 전용 |
+| **멀티 머신** | 불가 (단일 데스크톱 바인딩) | **머신마다 인스턴스 실행 가능** |
+
+**실제 운영 예시** — 스마트폰 1대로 다음과 같은 구성을 동시에 제어할 수 있습니다:
+
+```text
+스마트폰 1대
+  ├── Telegram 채팅 3개 ──→ 맥북A (인스턴스1, 프로젝트 디렉토리1)
+  │                      ──→ 맥북A (인스턴스2, 프로젝트 디렉토리2)
+  │                      ──→ 맥북B (인스턴스3, 프로젝트 디렉토리3)
+  └── Slack 채팅 2개 ────→ (동일 또는 다른 인스턴스)
+```
+
+**솔직한 비교**: 스마트폰 1대 + 데스크톱 1대로 개인 작업만 한다면, **Dispatch가 더 나은 선택입니다.** 공식 제품답게 설치 없이 바로 쓸 수 있고, Computer Use로 GUI 앱까지 조작할 수 있습니다. GSD Orchestrator는 이 시나리오에서 Dispatch를 대체하려는 도구가 아닙니다.
+
+GSD Orchestrator가 빛나는 순간은 **Dispatch의 1:1 구조로는 불가능한 운영**이 필요할 때입니다. 여러 머신에 인스턴스를 분산 배치하거나, 팀원 여러 명이 하나의 봇을 공유하거나, Telegram/Slack을 동시에 운영하거나, Linux VPS에서 24/7 무인 실행이 필요한 경우 — Dispatch로 이 구성을 재현하려면 폰 3대와 데스크톱 3대를 각각 페어링해야 합니다.
+
+---
+
 ## 🆚 일반 AI 봇과 무엇이 다른가?
 
 | 비교 항목 | 일반 메신저 기반 AI 봇 | GSD Orchestrator |
