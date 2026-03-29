@@ -20,10 +20,11 @@ class InboxWriter:
 
     def write(self, source: dict | str, message_id_or_text: int | str = 0,
               text: str = "", mode: str = "default",
-              extracted_text: str = "") -> Path:
+              extracted_text: str = "",
+              conversation_id: str = "") -> Path:
         """inbox에 메시지를 원자적으로 저장한다.
 
-        새 형식: write(source_dict, text, mode=...)
+        새 형식: write(source_dict, text, mode=..., conversation_id=...)
         하위 호환: write(chat_id_str, message_id_int, text_str, mode=...)
         """
         if isinstance(source, str):
@@ -53,6 +54,7 @@ class InboxWriter:
 
         data = {
             "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
             "source": source_obj,
             # 하위 호환 필드
             "chat_id": source_obj.get("channel_id", ""),

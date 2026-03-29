@@ -377,13 +377,16 @@ class InboxProcessor:
                 f"[시스템] 세션이 자동 리셋되었습니다. ({self._config.claude_max_session_turns}건 처리 완료)"
             )
 
-        # 세션 리셋 시 sent/ 이력으로 맥락 복원
+        # 세션 리셋 또는 첫 메시지 시 sent/ 이력으로 맥락 복원
         prompt = request_text
-        if not continue_flag:
+        needs_context = not continue_flag or turn_count == 0
+        if needs_context:
             channel_id = source.get("channel_id", "")
-            context = self._build_context_from_history(channel_id)
+            conversation_id = data.get("conversation_id", "")
+            context = self._build_context_from_history(channel_id, conversation_id)
             if context:
-                logger.info("Simple Track 세션 리셋 — sent/ 이력으로 맥락 복원")
+                label = "세션 리셋" if not continue_flag else "첫 메시지"
+                logger.info(f"Simple Track {label} — sent/ 이력으로 맥락 복원")
                 prompt = (
                     f"이전 대화 맥락을 참고하여 답변하세요.\n\n"
                     f"{context}\n\n"
@@ -467,9 +470,16 @@ class InboxProcessor:
 
             # 세션 유실 여부 판단: .gsd-active에 기록된 PID와 현재 PID 비교
             session_alive = self._is_gsd_session_alive()
+            channel_id = source.get("channel_id", "")
+            conversation_id = data.get("conversation_id", "")
 
             if session_alive:
-                prompt = f"{request_text}\n\n위 내용을 반영하여 /gsd:next 로 작업을 계속 진행해주세요. 완료 후 결과를 요약해서 텍스트로만 출력해주세요."
+                # 세션 유지: Claude가 이전 맥락을 보유, 유연한 프롬프트로 전달
+                prompt = (
+                    f"{request_text}\n\n"
+                    "이전 작업 맥락을 유지하여 사용자의 요청을 이어서 처리해주세요. "
+                    "완료 후 결과를 요약해서 텍스트로만 출력해주세요."
+                )
                 result = await self._run_claude(
                     prompt, continue_session=True,
                     progress_label=f"GSD 재개: {request_text[:20]}",
@@ -477,18 +487,22 @@ class InboxProcessor:
             else:
                 # 세션 유실 → sent/ 이력으로 맥락 복원
                 logger.info("GSD 세션 유실 감지 — sent/ 이력으로 맥락 복원")
-                channel_id = source.get("channel_id", "")
-                context = self._build_context_from_history(channel_id)
+                context = self._build_context_from_history(
+                    channel_id, conversation_id)
                 if context:
                     prompt = (
                         f"이전 대화 맥락을 참고하여 작업을 이어서 진행하세요.\n\n"
                         f"{context}\n\n"
                         f"사용자의 새 메시지: {request_text}\n\n"
-                        "위 맥락을 반영하여 /gsd:next 로 작업을 계속 진행해주세요. "
+                        "위 맥락을 반영하여 사용자의 요청을 처리해주세요. "
                         "완료 후 결과를 요약해서 텍스트로만 출력해주세요."
                     )
                 else:
-                    prompt = f"{request_text}\n\n위 내용을 반영하여 /gsd:next 로 작업을 계속 진행해주세요. 완료 후 결과를 요약해서 텍스트로만 출력해주세요."
+                    prompt = (
+                        f"{request_text}\n\n"
+                        "사용자의 요청을 처리해주세요. "
+                        "완료 후 결과를 요약해서 텍스트로만 출력해주세요."
+                    )
                 result = await self._run_claude(
                     prompt,
                     progress_label=f"GSD 재개(복원): {request_text[:20]}",
@@ -1161,8 +1175,16 @@ class InboxProcessor:
         self._clear_workqueue()
         self._plan_file.unlink(missing_ok=True)
 
-    def _build_context_from_history(self, user_channel_id: str) -> str:
-        """sent/ 디렉토리에서 최근 대화 이력을 읽어 맥락 문자열을 생성한다."""
+    def has_pending_plan(self) -> bool:
+        """승인 대기 중인 GSD 계획서가 있는지 확인한다."""
+        return self._plan_file.exists()
+
+    def _build_context_from_history(self, user_channel_id: str,
+                                     conversation_id: str = "") -> str:
+        """sent/ 디렉토리에서 최근 대화 이력을 읽어 맥락 문자열을 생성한다.
+
+        conversation_id가 지정되면 같은 대화의 메시지를 우선 수집한다.
+        """
         max_messages = self._config.gsd_history_max_messages
         if max_messages <= 0:
             return ""
@@ -1180,25 +1202,47 @@ class InboxProcessor:
         candidates = [f for f in candidates if "_system-alert" not in f.name]
         candidates.sort(key=lambda f: f.name, reverse=True)
 
+        # conversation_id가 있으면 같은 대화 메시지 우선 수집
         messages = []
-        for f in candidates:
-            if len(messages) >= max_messages:
-                break
-            try:
-                data = json.loads(f.read_text())
-                source = data.get("source", {})
-                if source.get("channel_id") != user_channel_id:
+        if conversation_id:
+            for f in candidates:
+                if len(messages) >= max_messages:
+                    break
+                try:
+                    data = json.loads(f.read_text())
+                    if data.get("conversation_id") != conversation_id:
+                        continue
+                    req = data.get("request", {})
+                    resp = data.get("response", {})
+                    if not req or not resp or not resp.get("text"):
+                        continue
+                    messages.append({
+                        "request": req.get("text", ""),
+                        "response": resp.get("text", ""),
+                    })
+                except (json.JSONDecodeError, OSError):
                     continue
-                req = data.get("request", {})
-                resp = data.get("response", {})
-                if not req or not resp or not resp.get("text"):
+
+        # conversation_id로 못 찾으면 channel_id 기반 fallback
+        if not messages:
+            for f in candidates:
+                if len(messages) >= max_messages:
+                    break
+                try:
+                    data = json.loads(f.read_text())
+                    source = data.get("source", {})
+                    if source.get("channel_id") != user_channel_id:
+                        continue
+                    req = data.get("request", {})
+                    resp = data.get("response", {})
+                    if not req or not resp or not resp.get("text"):
+                        continue
+                    messages.append({
+                        "request": req.get("text", ""),
+                        "response": resp.get("text", ""),
+                    })
+                except (json.JSONDecodeError, OSError):
                     continue
-                messages.append({
-                    "request": req.get("text", ""),
-                    "response": resp.get("text", ""),
-                })
-            except (json.JSONDecodeError, OSError):
-                continue
 
         if not messages:
             return ""

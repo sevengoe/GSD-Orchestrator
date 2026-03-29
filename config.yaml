@@ -51,7 +51,7 @@ gsd:
   auto_classify: true
   classify_model: haiku
   session_timeout_minutes: 30     # GSD 세션 유지 시간 (0이면 즉시 종료)
-  history_max_messages: 3          # 세션 유실 시 이력 복원 최대 메시지 수
+  history_max_messages: 5          # 세션 유실 시 이력 복원 최대 메시지 수
 
 mcp:
   enabled: true

@@ -1,6 +1,10 @@
 import asyncio
+import json
 import logging
 import time
+import uuid
+from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Awaitable
 
 from .config import Config
@@ -14,6 +18,16 @@ from .archiver import Archiver
 from .api import ChannelSender
 
 logger = logging.getLogger(__name__)
+
+KST = timezone(timedelta(hours=9))
+
+# GSD 작업 계속 의도를 나타내는 경량 패턴 (Claude 호출 없이 판별)
+_GSD_CONTINUE_PATTERNS = frozenset({
+    "진행해주세요", "진행해", "진행", "네", "ㅇㅇ", "응", "확인",
+    "승인", "계속", "시작", "고", "ㄱ", "ok", "yes", "go",
+    "진행하겠습니다", "부탁합니다", "해주세요", "ㅇ", "넹", "넵",
+    "해줘", "해주세요", "좋아", "그래", "시작해", "시작해주세요",
+})
 
 
 # on_result 콜백 타입: (source, request_text, response_text, status)
@@ -34,6 +48,7 @@ class Orchestrator:
         self._tasks: list[asyncio.Task] = []
         self._blocked_file = config.runtime_path("blocked")
         self._start_time = int(time.time())
+        self._recent_message_ids: OrderedDict = OrderedDict()
 
         # 채널 어댑터 생성
         adapters: list[ChannelAdapter] = []
@@ -126,6 +141,12 @@ class Orchestrator:
                                   extracted_text: str = "") -> None:
         """모든 채널 어댑터의 공통 메시지 콜백."""
         logger.info(f"[수신] [{source.get('channel_type')}] {text}")
+
+        # ── 중복 메시지 방지 (message_id 기반) ──
+        if self._is_duplicate_message(source):
+            logger.info(f"중복 메시지 skip: {source.get('channel_type')}_{source.get('message_id')}")
+            return
+
         pending = self._inbox_writer.pending_count()
 
         keyword = extract_keyword(text)
@@ -140,17 +161,19 @@ class Orchestrator:
                 minutes = delay // 60
                 seconds = delay % 60
                 if message_ts < self._start_time:
-                    # 메시지가 프로세스 시작 전에 전송됨 → 앱 정지 중 밀린 메시지
                     delay_notice = f"\n(앱 정지 중 수신된 메시지입니다. {minutes}분 {seconds}초 전 전송)"
                 else:
-                    # 프로세스 실행 중 지연 → 네트워크 문제
                     delay_notice = f"\n(네트워크 불안정으로 수신이 {minutes}분 {seconds}초 지연되었습니다)"
                 logger.warning(f"메시지 수신 지연: {delay}초 ({source.get('channel_type')})")
 
+        is_continuation = self._is_gsd_continuation(text)
+
         # GSD 블로킹 상태에서 사용자 응답 → gsd-resume
         if mode == "default" and self._blocked_file.exists():
+            conv_id = self._resolve_conversation_id(source, is_continuation=True)
             self._inbox_writer.write(source, text, mode="gsd-resume",
-                                     extracted_text=extracted_text)
+                                     extracted_text=extracted_text,
+                                     conversation_id=conv_id)
             try:
                 self._blocked_file.unlink()
             except OSError:
@@ -164,26 +187,103 @@ class Orchestrator:
                 msg + delay_notice)
             return
 
-        # GSD 세션 활성 상태에서 사용자 응답 → gsd-resume (세션 이어가기)
-        if mode == "default" and self._inbox_processor.is_gsd_active():
+        # 계속 패턴 + 계획서 존재 → GSD 세션 만료와 무관하게 gsd-resume (타임아웃 방어)
+        if mode == "default" and is_continuation and self._inbox_processor.has_pending_plan():
+            conv_id = self._resolve_conversation_id(source, is_continuation=True)
             self._inbox_writer.write(source, text, mode="gsd-resume",
-                                     extracted_text=extracted_text)
+                                     extracted_text=extracted_text,
+                                     conversation_id=conv_id)
             if pending > 0:
-                msg = f"{header} GSD 작업 이어서 진행합니다. (앞선 작업 {pending}건 처리 중)"
+                msg = f"{header} 계획서 기반 작업을 이어갑니다. (앞선 작업 {pending}건 처리 중)"
             else:
-                msg = f"{header} GSD 작업 이어서 진행합니다."
+                msg = f"{header} 계획서 기반 작업을 이어갑니다."
             await self._channel_manager.send_to(
                 source.get("channel_type", ""), source.get("channel_id", ""),
                 msg + delay_notice)
             return
 
+        # GSD 세션 활성 — 의도 기반 분류
+        if mode == "default" and self._inbox_processor.is_gsd_active():
+            if is_continuation:
+                # GSD 계속 의도 → gsd-resume
+                conv_id = self._resolve_conversation_id(source, is_continuation=True)
+                self._inbox_writer.write(source, text, mode="gsd-resume",
+                                         extracted_text=extracted_text,
+                                         conversation_id=conv_id)
+                if pending > 0:
+                    msg = f"{header} GSD 작업 이어서 진행합니다. (앞선 작업 {pending}건 처리 중)"
+                else:
+                    msg = f"{header} GSD 작업 이어서 진행합니다."
+                await self._channel_manager.send_to(
+                    source.get("channel_type", ""), source.get("channel_id", ""),
+                    msg + delay_notice)
+                return
+            else:
+                # 새로운 요청 → GSD 세션 종료, default로 fall through
+                logger.info("GSD 활성 중 새 요청 감지 — 세션 종료 후 default 처리")
+                self._inbox_processor.clear_gsd_active()
+
         # inbox 저장 (delay_notice는 source에 포함하여 inbox_processor에서 활용)
         if delay_notice:
             source["delay_notice"] = delay_notice
+        conv_id = self._resolve_conversation_id(source, is_continuation=False)
         self._inbox_writer.write(source, text, mode=mode,
-                                 extracted_text=extracted_text)
+                                 extracted_text=extracted_text,
+                                 conversation_id=conv_id)
 
         # 수신 확인은 inbox_processor가 .processing 전환 시 발송
+
+    # ── 의도 판별 헬퍼 ─────────────────────────────────
+
+    @staticmethod
+    def _is_gsd_continuation(text: str) -> bool:
+        """사용자 메시지가 GSD 작업 계속 의도인지 경량 패턴 매칭으로 판별."""
+        normalized = text.strip().lower().rstrip(".!?~")
+        return normalized in _GSD_CONTINUE_PATTERNS
+
+    def _is_duplicate_message(self, source: dict) -> bool:
+        """message_id 기반 중복 메시지 감지."""
+        msg_id = source.get("message_id")
+        if not msg_id:
+            return False
+        ch = source.get("channel_type", "")
+        key = f"{ch}_{msg_id}"
+        if key in self._recent_message_ids:
+            return True
+        self._recent_message_ids[key] = True
+        while len(self._recent_message_ids) > 100:
+            self._recent_message_ids.popitem(last=False)
+        return False
+
+    def _resolve_conversation_id(self, source: dict, is_continuation: bool) -> str:
+        """conversation_id를 결정한다. 계속이면 최근 대화 계승, 아니면 새로 생성."""
+        if is_continuation:
+            cid = self._find_recent_conversation_id(source)
+            if cid:
+                return cid
+        return f"conv-{datetime.now(KST).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
+
+    def _find_recent_conversation_id(self, source: dict) -> str | None:
+        """sent/ + 오늘 archive/에서 같은 사용자의 최근 conversation_id를 찾는다."""
+        channel_id = source.get("channel_id", "")
+        candidates: list = list(self._config.sent_dir.glob("*.json"))
+        today = datetime.now(KST).strftime("%Y-%m-%d")
+        today_archive = self._config.archive_dir / today
+        if today_archive.exists():
+            candidates.extend(today_archive.glob("*.json"))
+        candidates = [f for f in candidates if "_system-alert" not in f.name]
+        candidates.sort(key=lambda f: f.name, reverse=True)
+
+        for f in candidates[:10]:
+            try:
+                data = json.loads(f.read_text())
+                if data.get("source", {}).get("channel_id") == channel_id:
+                    cid = data.get("conversation_id")
+                    if cid:
+                        return cid
+            except (json.JSONDecodeError, OSError):
+                continue
+        return None
 
     # ── 백그라운드 태스크 ────────────────────────────────
 

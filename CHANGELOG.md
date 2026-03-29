@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.6.1] - 2026-03-29
+
+### Fixed
+- **GSD 세션 활성 중 새 요청이 `/gsd:next`로 강제 변환되는 문제**: "문서로 만들어줘" 같은 독립 요청이 gsd-resume으로 잘못 분류되어 "GSD 미초기화" 응답만 반복하던 버그 수정. 의도 기반 분류(`_is_gsd_continuation`) 도입 — 계속 패턴("진행해주세요", "네", "승인" 등)만 gsd-resume, 나머지는 default로 처리
+- **GSD 세션 타임아웃 후 컨텍스트 소실**: "진행해주세요"가 30분 타임아웃 이후 도착하면 맥락 없이 처리되던 문제 수정. 계획서(`.gsd-plan.md`)가 존재하면 세션 만료와 무관하게 gsd-resume으로 연결
+- **gsd-resume 프롬프트에서 `/gsd:next` 강제 실행 제거**: `.planning/` 디렉토리가 없는 프로젝트에서 "GSD 프로젝트 미초기화" 반복 응답 유발하던 문제 수정. 유연한 프롬프트로 변경하여 Claude가 맥락에 맞게 판단
+- **네트워크 지연으로 인한 중복 메시지 처리**: 같은 `message_id`가 2회 수신되면 2회 처리되어 시간 낭비(최대 99분)하던 문제 수정. `message_id` 기반 in-memory dedup 추가
+- **새 세션 첫 메시지에서 이전 대화 맥락 미참조**: `turn_count=0`(첫 메시지)일 때도 sent/archive에서 이전 대화 이력을 주입하도록 개선
+
+### Added
+- `conversation_id` 필드: 메시지 JSON에 대화 스레드 추적 ID 추가. 계속 패턴 시 이전 대화의 ID를 계승, 새 요청 시 신규 생성. `_build_context_from_history()`에서 같은 대화 메시지를 우선 수집
+- `has_pending_plan()`: 승인 대기 중인 계획서 존재 여부를 Orchestrator에서 확인 가능
+- `_is_gsd_continuation()`: 경량 패턴 매칭으로 GSD 계속 의도 판별 (Claude 호출 없음, 지연 0ms)
+- `_is_duplicate_message()`: `message_id` 기반 중복 수신 감지 (최대 100건 유지)
+- `_resolve_conversation_id()` / `_find_recent_conversation_id()`: sent/archive에서 대화 스레드 계승 로직
+- `test_context_continuity.py`: 26개 단위 테스트 (의도 분류, 타임아웃 방어, 컨텍스트 주입, 중복 방지, conversation_id)
+
+### Changed
+- `config.yaml`: `gsd.history_max_messages` 3 → 5 (맥락 복원 범위 확대)
+- `_build_context_from_history()`: `conversation_id` 파라미터 추가, 같은 대화 우선 필터링 + channel_id fallback
+- `_process_simple()`: 첫 메시지(`turn_count=0`)에도 아카이브 컨텍스트 주입
+- `_process_gsd()` gsd-resume: `/gsd:next` 강제 대신 "이전 작업을 이어서 처리해주세요" 유연 프롬프트
+
+---
+
 ## [0.6.0] - 2026-03-24
 
 ### Added

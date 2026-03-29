@@ -512,8 +512,8 @@ class TestSimpleTrackContextRestore:
         assert "새 질문" in captured_prompt
 
     @pytest.mark.asyncio
-    async def test_simple_continue_no_history_injection(self, setup):
-        """Simple Track 세션 유지 시 이력 주입 없이 원본 텍스트만 전달된다."""
+    async def test_simple_continue_mid_session_no_history(self, setup):
+        """Simple Track 세션 중간(turn_count>0) 시 이력 주입 없이 원본 텍스트만 전달된다."""
         processor = setup["processor"]
         inbox = setup["inbox"]
         sent = setup["sent"]
@@ -521,8 +521,8 @@ class TestSimpleTrackContextRestore:
         _make_sent_file(sent, "002_prev.json",
                         request_text="이전 질문", response_text="이전 답변")
 
-        # turn_count = 0이면 continue_flag = True → 이력 주입 없음
-        processor._write_int_file(processor._turn_count_file, 0)
+        # turn_count > 0이면 세션 진행 중 → 이력 주입 없음
+        processor._write_int_file(processor._turn_count_file, 5)
 
         _make_inbox_file(inbox, "continue_test.json", text="일반 질문")
 
@@ -537,6 +537,35 @@ class TestSimpleTrackContextRestore:
             await processor._process_inbox()
 
         assert captured_prompt == "일반 질문"
+
+    @pytest.mark.asyncio
+    async def test_simple_first_message_injects_history(self, setup):
+        """Simple Track 첫 메시지(turn_count=0) 시 이력이 주입된다."""
+        processor = setup["processor"]
+        inbox = setup["inbox"]
+        sent = setup["sent"]
+
+        _make_sent_file(sent, "002_prev.json",
+                        request_text="이전 질문", response_text="이전 답변")
+
+        # turn_count = 0이면 첫 메시지 → 이력 주입
+        processor._write_int_file(processor._turn_count_file, 0)
+
+        _make_inbox_file(inbox, "first_test.json", text="일반 질문")
+
+        captured_prompt = None
+
+        async def capture_run(prompt, **kwargs):
+            nonlocal captured_prompt
+            captured_prompt = prompt
+            return _claude_success("응답 완료")
+
+        with patch.object(processor, "_run_claude", side_effect=capture_run):
+            await processor._process_inbox()
+
+        assert "이전 대화" in captured_prompt
+        assert "이전 질문" in captured_prompt
+        assert "일반 질문" in captured_prompt
 
     @pytest.mark.asyncio
     async def test_simple_reset_no_history_uses_original(self, setup):
