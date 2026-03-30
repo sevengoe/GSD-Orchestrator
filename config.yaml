@@ -42,6 +42,7 @@ claude:
   cooldown_retry_minutes: 10
   max_session_turns: 20
   working_dir: workspace
+  additional_dirs: []              # 추가 디렉토리 접근 (예: ["../data", "../shared"])
 
 gsd:
   enabled: true

@@ -353,7 +353,7 @@ class InboxProcessor:
             "'gsd' 또는 'simple'로만 답해. 다른 말 하지 마.\n\n"
             f"요청: {text}"
         )
-        result = await self._run_claude(prompt, model=self._config.gsd_classify_model, ephemeral=True)
+        result = await self._run_claude(prompt, model=self._config.gsd_classify_model, ephemeral=True, bare=True)
         if result and "gsd" in result.get("result", "").lower():
             return "gsd"
         return "simple"
@@ -574,9 +574,11 @@ class InboxProcessor:
     async def _run_claude(self, prompt: str, continue_session: bool = False,
                           model: str | None = None,
                           ephemeral: bool = False,
+                          bare: bool = False,
+                          agent: str | None = None,
                           progress_label: str | None = None) -> dict | None:
-        # 보안 룰 주입 (분류 호출 제외)
-        if not ephemeral:
+        # 보안 룰 주입 (분류/bare 호출 제외)
+        if not ephemeral and not bare:
             prompt = self._apply_security_rules(prompt)
 
         cmd = ["claude", "-p", prompt, "--output-format", "json",
@@ -587,6 +589,13 @@ class InboxProcessor:
             cmd.extend(["--model", model])
         if ephemeral:
             cmd.append("--no-session-persistence")
+        if bare:
+            cmd.append("--bare")
+        if agent:
+            cmd.extend(["--agent", agent])
+        # --add-dir: 추가 디렉토리 접근 권한
+        for d in self._config.claude_additional_dirs:
+            cmd.extend(["--add-dir", d])
 
         progress_task = None
         if progress_label and self._config.progress_interval > 0:

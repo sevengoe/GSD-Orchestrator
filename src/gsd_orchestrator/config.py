@@ -79,6 +79,7 @@ class Config:
     instance_id: str = ""
 
     # attachments
+    claude_additional_dirs: list = field(default_factory=list)
     attachments_allowed_extensions: list = field(default_factory=lambda: ["txt", "md", "pdf"])
     attachments_max_file_size: int = 1_048_576  # 1MB
     attachments_temp_dir: Path = Path("messages/attachments")
@@ -135,6 +136,7 @@ class Config:
             claude_cooldown_retry_minutes=cfg["claude"].get("cooldown_retry_minutes", 10),
             claude_max_session_turns=cfg["claude"]["max_session_turns"],
             claude_working_dir=str(base_dir / cfg["claude"].get("working_dir", "workspace")),
+            claude_additional_dirs=[str(base_dir / d) for d in cfg["claude"].get("additional_dirs", [])],
             # gsd
             gsd_enabled=cfg.get("gsd", {}).get("enabled", False),
             gsd_timeout=cfg.get("gsd", {}).get("timeout", 600000),
