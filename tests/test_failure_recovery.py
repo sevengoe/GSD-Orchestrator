@@ -686,6 +686,168 @@ class TestAlertQuietHours:
             assert result is False
 
 
+# ── Token limit 자동 재시도 ────────────────────────────────
+
+
+class TestTokenLimitDetection:
+    """Token limit 에러 감지 및 자동 cooldown 설정."""
+
+    def test_is_token_limit_error_rate_limit(self):
+        assert InboxProcessor._is_token_limit_error("rate_limit exceeded") is True
+
+    def test_is_token_limit_error_429(self):
+        assert InboxProcessor._is_token_limit_error("HTTP 429 Too Many Requests") is True
+
+    def test_is_token_limit_error_overloaded(self):
+        assert InboxProcessor._is_token_limit_error("API is overloaded") is True
+
+    def test_is_token_limit_error_quota(self):
+        assert InboxProcessor._is_token_limit_error("quota_exceeded") is True
+
+    def test_is_token_limit_error_normal_error(self):
+        assert InboxProcessor._is_token_limit_error("일반 처리 실패") is False
+
+    def test_is_token_limit_error_empty(self):
+        assert InboxProcessor._is_token_limit_error("") is False
+
+    def test_parse_reset_time_resets_at_7pm(self):
+        ts = InboxProcessor._parse_reset_time("resets at 7 PM KST")
+        assert ts is not None
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        dt = datetime.fromtimestamp(ts, tz=KST)
+        assert dt.hour == 19
+        assert dt.minute == 0
+
+    def test_parse_reset_time_try_again_after(self):
+        ts = InboxProcessor._parse_reset_time("try again after 3:30 PM")
+        assert ts is not None
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        dt = datetime.fromtimestamp(ts, tz=KST)
+        assert dt.hour == 15
+        assert dt.minute == 30
+
+    def test_parse_reset_time_no_match(self):
+        assert InboxProcessor._parse_reset_time("일반 에러 메시지") is None
+
+    @pytest.mark.asyncio
+    async def test_token_limit_sets_cooldown_not_failcount(self, setup):
+        """Token limit 에러 시 cooldown 설정, failcount 미증가, inbox 복원."""
+        processor = setup["processor"]
+        inbox = setup["inbox"]
+        outbox = setup["outbox"]
+
+        _make_inbox_file(inbox, "token_err.json")
+
+        # Token limit 에러를 반환하는 Claude mock
+        token_limit_result = {
+            "type": "result",
+            "subtype": "error",
+            "result": "rate_limit exceeded, resets at 7 PM KST",
+            "usage": {"input_tokens": 0, "output_tokens": 0,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+            "modelUsage": {},
+            "total_cost_usd": 0,
+            "duration_ms": 100,
+        }
+
+        with patch.object(processor, "_run_claude", new_callable=AsyncMock,
+                          return_value=token_limit_result):
+            await processor._process_inbox()
+            await asyncio.sleep(0)
+
+        # inbox에 파일 복원 (error/로 이동하지 않음)
+        assert (inbox / "token_err.json").exists()
+        assert not (setup["error"] / "token_err.json").exists()
+
+        # failcount가 생성되지 않음
+        assert not (inbox / "token_err.json.failcount").exists()
+
+        # cooldown 파일이 설정됨
+        assert processor._cooldown_file.exists()
+        resume_at = int(processor._cooldown_file.read_text().strip())
+        assert resume_at > int(time.time())
+
+        # 알림이 발송됨
+        alert_files = list(outbox.glob("*_system-alert.json"))
+        assert len(alert_files) >= 1
+        alert_text = json.loads(alert_files[0].read_text())["response"]["text"]
+        assert "Token limit" in alert_text
+
+    @pytest.mark.asyncio
+    async def test_token_limit_default_cooldown_on_parse_fail(self, setup):
+        """리셋 시각 파싱 실패 시 기본 cooldown 적용."""
+        processor = setup["processor"]
+        inbox = setup["inbox"]
+
+        _make_inbox_file(inbox, "token_notime.json")
+
+        token_limit_result = {
+            "type": "result",
+            "subtype": "error",
+            "result": "rate_limit exceeded",  # 리셋 시각 없음
+            "usage": {"input_tokens": 0, "output_tokens": 0,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+            "modelUsage": {},
+            "total_cost_usd": 0,
+            "duration_ms": 100,
+        }
+
+        with patch.object(processor, "_run_claude", new_callable=AsyncMock,
+                          return_value=token_limit_result):
+            await processor._process_inbox()
+            await asyncio.sleep(0)
+
+        # inbox에 복원됨
+        assert (inbox / "token_notime.json").exists()
+        # cooldown 설정됨 (기본 retry minutes)
+        assert processor._cooldown_file.exists()
+
+
+# ── /retry 커맨드 ────────────────────────────────────────
+
+
+class TestRetryCommand:
+    """error/ 메시지 복구 커맨드."""
+
+    def test_restore_error_to_outbox(self, setup):
+        """error/ 파일을 outbox/로 복원하면 retry_count가 0으로 리셋된다."""
+        error_dir = setup["error"]
+        outbox = setup["outbox"]
+
+        # error/ 에 실패 메시지 생성
+        data = {
+            "id": "failed-msg",
+            "source": {"channel_type": "telegram", "channel_id": "123",
+                       "user_name": "김철수"},
+            "targets": [{"channel_type": "telegram", "channel_id": "123",
+                         "is_origin": True}],
+            "retry_count": 3,
+            "keyword": "test",
+            "request": {"text": "원본 요청", "timestamp": "2026-03-30T15:00:00+09:00"},
+            "response": {"text": "처리 결과", "parse_mode": "HTML",
+                         "timestamp": "2026-03-30T15:01:00+09:00"},
+        }
+        (error_dir / "failed.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=2))
+
+        # 복원 시뮬레이션 (TelegramAdapter._on_retry의 핵심 로직)
+        f = error_dir / "failed.json"
+        restored = json.loads(f.read_text())
+        restored["retry_count"] = 0
+        tmp = outbox / f".{f.name}.tmp"
+        tmp.write_text(json.dumps(restored, ensure_ascii=False, indent=2))
+        tmp.rename(outbox / f.name)
+        f.unlink()
+
+        # 검증
+        assert not (error_dir / "failed.json").exists()
+        assert (outbox / "failed.json").exists()
+        restored_data = json.loads((outbox / "failed.json").read_text())
+        assert restored_data["retry_count"] == 0
+
+
 # ── 정리: 런타임 파일 cleanup ────────────────────────────────
 
 

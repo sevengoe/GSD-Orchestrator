@@ -85,18 +85,24 @@ class SlackAdapter(ChannelAdapter):
         try:
             max_len = self.max_message_length
             if len(text) <= max_len:
-                await self._app.client.chat_postMessage(
+                resp = await self._app.client.chat_postMessage(
                     channel=channel_id, text=text,
                 )
             else:
                 for i in range(0, len(text), max_len):
                     chunk = text[i:i + max_len]
-                    await self._app.client.chat_postMessage(
+                    resp = await self._app.client.chat_postMessage(
                         channel=channel_id, text=chunk,
                     )
             return True
         except Exception as e:
-            logger.error(f"Slack 발송 실패 [{channel_id}]: {e}")
+            err_name = type(e).__name__
+            err_resp = getattr(e, "response", None)
+            status = getattr(err_resp, "status_code", "") if err_resp else ""
+            logger.error(
+                f"Slack 발송 실패 [{channel_id}]: {err_name}: {e}"
+                + (f" (HTTP {status})" if status else "")
+            )
             return False
 
     async def _handle_message(self, event: dict):

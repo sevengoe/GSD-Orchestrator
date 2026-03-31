@@ -103,16 +103,26 @@ class OutboxSender:
             resp_preview = response_text[:100].replace("\n", " ")
             logger.info(f"[발송] {resp_preview}")
         elif retry_count >= MAX_OUTBOX_RETRIES:
-            logger.error(f"최대 재시도 초과({MAX_OUTBOX_RETRIES}), error/로 이관: {filepath.name}")
+            failed_info = ", ".join(
+                f"{t['channel_type']}:{t['channel_id']}" for t in failed_targets
+            )
+            logger.error(
+                f"최대 재시도 초과({MAX_OUTBOX_RETRIES}), error/로 이관: "
+                f"{filepath.name} — 실패 대상: [{failed_info}]"
+            )
             sending_path.rename(self._error_dir / filepath.name)
         else:
             data["targets"] = failed_targets
             data["retry_count"] = retry_count + 1
             sending_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
             sending_path.rename(filepath)  # outbox로 복원
+            failed_info = ", ".join(
+                f"{t['channel_type']}:{t['channel_id']}" for t in failed_targets
+            )
             logger.warning(
                 f"부분 발송 실패, {len(failed_targets)}건 재시도 예정 "
-                f"(retry {retry_count + 1}/{MAX_OUTBOX_RETRIES}): {filepath.name}"
+                f"(retry {retry_count + 1}/{MAX_OUTBOX_RETRIES}): "
+                f"{filepath.name} — 실패 대상: [{failed_info}]"
             )
 
     def _build_text(self, target: dict, source: dict, response_text: str) -> str:

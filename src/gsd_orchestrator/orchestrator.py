@@ -70,6 +70,8 @@ class Orchestrator:
                     "temp_dir": config.attachments_temp_dir,
                     "reject_message": config.attachments_reject_message,
                 },
+                error_dir=config.error_dir,
+                outbox_dir=config.outbox_dir,
             ))
 
         if config.slack_enabled and config.slack_bot_token:

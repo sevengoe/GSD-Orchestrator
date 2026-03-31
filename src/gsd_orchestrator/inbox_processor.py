@@ -34,6 +34,22 @@ MAX_FILE_FAILURES = 3
 MAX_GLOBAL_FAILURES = 5
 COOLDOWN_ALERT_SECONDS = 5 * 3600
 
+# Token limit 에러 패턴 (Claude API / Claude Code stderr)
+_TOKEN_LIMIT_PATTERNS = [
+    re.compile(r"rate[_\s-]?limit", re.IGNORECASE),
+    re.compile(r"token[_\s-]?limit", re.IGNORECASE),
+    re.compile(r"overloaded", re.IGNORECASE),
+    re.compile(r"too many (requests|tokens)", re.IGNORECASE),
+    re.compile(r"429", re.IGNORECASE),
+    re.compile(r"quota[_\s-]?exceeded", re.IGNORECASE),
+]
+# 리셋 시각 파싱 패턴 (예: "resets at 7 PM KST", "7:00 PM", "19:00" 등)
+_RESET_TIME_PATTERNS = [
+    re.compile(r"resets?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?", re.IGNORECASE),
+    re.compile(r"try\s+again\s+(?:after|at)\s+(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?", re.IGNORECASE),
+    re.compile(r"(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\s*(?:KST|UTC)?", re.IGNORECASE),
+]
+
 
 def _build_header(source: dict, keyword: str) -> str:
     """[채널][사용자][요청] 형식의 헤더를 생성한다."""
@@ -415,7 +431,7 @@ class InboxProcessor:
             self._track_tokens(result)
             error_msg = (result or {}).get("result", "처리 실패")
             await self._notify_result(source, request_text, error_msg, "error")
-            self._handle_failure(file, basename)
+            self._handle_failure(file, basename, error_msg)
 
     # ===================================================================
     # GSD Track
@@ -566,7 +582,7 @@ class InboxProcessor:
             error_msg = (result or {}).get("result", "GSD 처리 실패")
             await self._notify_result(source, request_text, error_msg, "error")
             self._gsd_active_file.unlink(missing_ok=True)
-            self._handle_failure(file, basename)
+            self._handle_failure(file, basename, error_msg)
 
     # ===================================================================
     # Claude 실행
@@ -792,9 +808,90 @@ class InboxProcessor:
         tmp.rename(self._config.outbox_dir / filename)
 
     # ===================================================================
+    # Token limit 감지
+    # ===================================================================
+    @staticmethod
+    def _is_token_limit_error(error_msg: str) -> bool:
+        """에러 메시지에서 token limit / rate limit 패턴을 감지한다."""
+        for pattern in _TOKEN_LIMIT_PATTERNS:
+            if pattern.search(error_msg):
+                return True
+        return False
+
+    @staticmethod
+    def _parse_reset_time(error_msg: str) -> int | None:
+        """에러 메시지에서 리셋 시각을 파싱하여 Unix timestamp로 반환한다.
+        파싱 실패 시 None."""
+        for pattern in _RESET_TIME_PATTERNS:
+            m = pattern.search(error_msg)
+            if m:
+                hour = int(m.group(1))
+                minute = int(m.group(2)) if m.group(2) else 0
+                ampm = (m.group(3) or "").upper()
+                if ampm == "PM" and hour < 12:
+                    hour += 12
+                elif ampm == "AM" and hour == 12:
+                    hour = 0
+
+                now = datetime.now(KST)
+                reset_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                # 이미 지난 시각이면 다음 날로
+                if reset_dt <= now:
+                    reset_dt += timedelta(days=1)
+                return int(reset_dt.timestamp())
+        return None
+
+    def _handle_token_limit(self, processing_file: Path, basename: str,
+                            error_msg: str) -> bool:
+        """Token limit 에러를 감지하면 리셋 시각까지 cooldown을 설정한다.
+        처리했으면 True, 일반 실패로 넘겨야 하면 False."""
+        if not self._is_token_limit_error(error_msg):
+            return False
+
+        # .processing → 원본 복원 (재시도 대상 유지)
+        original = processing_file.parent / basename
+        try:
+            processing_file.rename(original)
+        except OSError:
+            original = processing_file
+
+        # 리셋 시각 파싱 → cooldown 설정
+        resume_at = self._parse_reset_time(error_msg)
+        if resume_at:
+            wait_min = max(1, (resume_at - int(time.time())) // 60)
+            self._cooldown_file.write_text(str(resume_at))
+            reset_str = datetime.fromtimestamp(resume_at, tz=KST).strftime("%H:%M")
+            asyncio.get_running_loop().create_task(
+                self._send_alert(
+                    f"[시스템] Token limit 도달. {reset_str} KST에 자동 재시도 "
+                    f"(약 {wait_min}분 후). 즉시 재개: /resume"
+                )
+            )
+        else:
+            # 리셋 시각 파싱 실패 → 기본 cooldown
+            retry_min = self._config.claude_cooldown_retry_minutes
+            resume_at = int(time.time()) + retry_min * 60
+            self._cooldown_file.write_text(str(resume_at))
+            asyncio.get_running_loop().create_task(
+                self._send_alert(
+                    f"[시스템] Token limit 도달. {retry_min}분 후 자동 재시도. "
+                    "즉시 재개: /resume"
+                )
+            )
+
+        self._active_file.unlink(missing_ok=True)
+        logger.warning(f"Token limit 감지 — cooldown 설정, inbox 복원: {basename}")
+        return True
+
+    # ===================================================================
     # 실패 처리
     # ===================================================================
-    def _handle_failure(self, processing_file: Path, basename: str):
+    def _handle_failure(self, processing_file: Path, basename: str,
+                        error_msg: str = ""):
+        # Token limit이면 cooldown만 설정하고 파일은 inbox에 유지
+        if error_msg and self._handle_token_limit(processing_file, basename, error_msg):
+            return
+
         original = processing_file.parent / basename
         try:
             processing_file.rename(original)
@@ -1047,6 +1144,29 @@ class InboxProcessor:
 
             logger.info(f"작업 큐 Unit {n}/{total} 완료: {title}")
         else:
+            # Token limit이면 cooldown만 설정하고 workqueue는 유지
+            wq_error_msg = (result or {}).get("result", "")
+            if self._is_token_limit_error(wq_error_msg):
+                try:
+                    processing_file.rename(file)
+                except OSError:
+                    pass
+                resume_at = self._parse_reset_time(wq_error_msg)
+                if not resume_at:
+                    retry_min = self._config.claude_cooldown_retry_minutes
+                    resume_at = int(time.time()) + retry_min * 60
+                self._cooldown_file.write_text(str(resume_at))
+                self._active_file.unlink(missing_ok=True)
+                wait_min = max(1, (resume_at - int(time.time())) // 60)
+                asyncio.get_running_loop().create_task(
+                    self._send_alert(
+                        f"{header} Token limit 도달. {wait_min}분 후 자동 재시도. "
+                        "즉시 재개: /resume"
+                    )
+                )
+                logger.warning(f"작업 큐 Unit {n} — Token limit, cooldown 설정")
+                return
+
             # 실패: 복원하여 재시도
             try:
                 processing_file.rename(file)

@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Callable, Awaitable
 
 from telegram import Update
+from telegram.error import (
+    BadRequest, Forbidden, TimedOut, NetworkError, RetryAfter, TelegramError,
+)
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 from .base import ChannelAdapter
@@ -22,7 +25,9 @@ class TelegramAdapter(ChannelAdapter):
 
     def __init__(self, bot_token: str, chat_id: str,
                  runtime_paths: dict[str, Path] | None = None,
-                 attachments_config: dict | None = None):
+                 attachments_config: dict | None = None,
+                 error_dir: Path | None = None,
+                 outbox_dir: Path | None = None):
         self._bot_token = bot_token
         self._chat_id = chat_id
         self._app: Application | None = None
@@ -33,6 +38,9 @@ class TelegramAdapter(ChannelAdapter):
         self._att_max_size: int = att.get("max_file_size", 1_048_576)
         self._att_temp_dir: Path = att.get("temp_dir", Path("messages/attachments"))
         self._att_reject_msg: str = att.get("reject_message", "txt, md, pdf 파일만 지원합니다.")
+        # error/outbox 디렉토리 (retry 커맨드용)
+        self._error_dir = error_dir or Path("messages/error")
+        self._outbox_dir = outbox_dir or Path("messages/outbox")
         # 인스턴스별 런타임 파일 경로
         paths = runtime_paths or {}
         self._blocked_file = paths.get("blocked", Path("/tmp/gsd-orchestrator.blocked"))
@@ -69,6 +77,7 @@ class TelegramAdapter(ChannelAdapter):
         self._app.add_handler(CommandHandler("reset", self._on_reset))
         self._app.add_handler(CommandHandler("status", self._on_status))
         self._app.add_handler(CommandHandler("resume", self._on_resume))
+        self._app.add_handler(CommandHandler("retry", self._on_retry))
         self._app.add_handler(CommandHandler("gsd", self._on_gsd))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
@@ -109,8 +118,28 @@ class TelegramAdapter(ChannelAdapter):
                         chat_id=channel_id, text=chunk, parse_mode=parse_mode,
                     )
             return True
+        except Forbidden as e:
+            logger.error(f"Telegram 발송 차단 (permanent) [{channel_id}]: {e}")
+            return False
+        except BadRequest as e:
+            logger.error(f"Telegram 잘못된 요청 [{channel_id}]: {e}")
+            return False
+        except RetryAfter as e:
+            logger.warning(
+                f"Telegram 속도 제한 [{channel_id}]: {e.retry_after}초 후 재시도 필요"
+            )
+            return False
+        except TimedOut as e:
+            logger.warning(f"Telegram 타임아웃 (recoverable) [{channel_id}]: {e}")
+            return False
+        except NetworkError as e:
+            logger.warning(f"Telegram 네트워크 에러 (recoverable) [{channel_id}]: {e}")
+            return False
+        except TelegramError as e:
+            logger.error(f"Telegram API 에러 [{channel_id}]: {e}")
+            return False
         except Exception as e:
-            logger.error(f"Telegram 발송 실패 [{channel_id}]: {e}")
+            logger.error(f"Telegram 발송 실패 (unknown) [{channel_id}]: {type(e).__name__}: {e}")
             return False
 
     def _build_source(self, update: Update) -> dict:
@@ -232,6 +261,8 @@ class TelegramAdapter(ChannelAdapter):
             "/status — 상태 확인 (대기 건수, 쿨다운, 토큰 사용량)\n"
             "/reset — 다음 요청부터 새 세션으로 시작\n"
             "/resume — 쿨다운 즉시 해제\n"
+            "/retry — 발송 실패 메시지 재발송\n"
+            "  /retry (목록) | /retry all (전체) | /retry 번호\n"
             "\n"
             "일반 메시지 — 자동 분류 후 Simple Track 또는 GSD Track으로 라우팅"
         )
@@ -302,6 +333,83 @@ class TelegramAdapter(ChannelAdapter):
         else:
             reply = "쿨다운 상태가 아닙니다. 정상 운영 중입니다."
         await update.message.reply_text(reply)
+
+    async def _on_retry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """error/ 디렉토리의 실패 메시지를 outbox/로 복원하여 재발송한다."""
+        if not self._is_allowed(update):
+            return
+
+        arg = update.message.text.replace("/retry", "", 1).strip()
+        error_files = sorted(self._error_dir.glob("*.json"))
+
+        if not error_files:
+            await update.message.reply_text("error/에 재발송 대상이 없습니다.")
+            return
+
+        # /retry (인자 없음): 목록 표시
+        if not arg:
+            lines = [f"발송 실패 메시지 ({len(error_files)}건):"]
+            for idx, f in enumerate(error_files, 1):
+                try:
+                    data = json.loads(f.read_text())
+                    req = data.get("request", {})
+                    req_text = req.get("text", "") if isinstance(req, dict) else ""
+                    preview = req_text[:40] or data.get("response", {}).get("text", "")[:40]
+                except (json.JSONDecodeError, OSError):
+                    preview = "(읽기 실패)"
+                lines.append(f"  {idx}. {f.name}\n      {preview}")
+            lines.append("\n/retry all — 전체 재발송\n/retry <번호> — 개별 재발송")
+            await update.message.reply_text("\n".join(lines))
+            return
+
+        # /retry all: 전체 복원
+        if arg.lower() == "all":
+            restored = 0
+            for f in error_files:
+                try:
+                    data = json.loads(f.read_text())
+                    data["retry_count"] = 0
+                    # targets가 비어있으면 원본 source에서 복원
+                    if not data.get("targets"):
+                        source = data.get("source", {})
+                        ch_type = source.get("channel_type", "telegram")
+                        ch_id = source.get("channel_id", "")
+                        data["targets"] = [{"channel_type": ch_type, "channel_id": ch_id, "is_origin": True}]
+                    tmp = self._outbox_dir / f".{f.name}.tmp"
+                    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+                    tmp.rename(self._outbox_dir / f.name)
+                    f.unlink()
+                    restored += 1
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.error(f"retry 복원 실패: {f.name} — {e}")
+            await update.message.reply_text(f"{restored}/{len(error_files)}건 outbox로 복원 완료.")
+            return
+
+        # /retry <번호>: 개별 복원
+        try:
+            idx = int(arg) - 1
+            if idx < 0 or idx >= len(error_files):
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(f"유효하지 않은 번호입니다. 1~{len(error_files)} 범위로 입력하세요.")
+            return
+
+        f = error_files[idx]
+        try:
+            data = json.loads(f.read_text())
+            data["retry_count"] = 0
+            if not data.get("targets"):
+                source = data.get("source", {})
+                ch_type = source.get("channel_type", "telegram")
+                ch_id = source.get("channel_id", "")
+                data["targets"] = [{"channel_type": ch_type, "channel_id": ch_id, "is_origin": True}]
+            tmp = self._outbox_dir / f".{f.name}.tmp"
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+            tmp.rename(self._outbox_dir / f.name)
+            f.unlink()
+            await update.message.reply_text(f"복원 완료: {f.name}")
+        except (json.JSONDecodeError, OSError) as e:
+            await update.message.reply_text(f"복원 실패: {f.name} — {e}")
 
     async def _on_gsd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
