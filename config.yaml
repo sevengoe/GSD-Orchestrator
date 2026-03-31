@@ -4,7 +4,7 @@ channels:
     chat_id: ""                    # 빈 문자열이면 .env TELEGRAM_CHAT_ID 사용
 
   slack:
-    enabled: true
+    enabled: false
     channel_id: ""                 # 빈 문자열이면 .env SLACK_CHANNEL_ID 사용
 
 broadcast:
@@ -41,8 +41,8 @@ claude:
   timeout: 600
   cooldown_retry_minutes: 10
   max_session_turns: 20
-  working_dir: workspace
-  additional_dirs: []              # 추가 디렉토리 접근 (예: ["../data", "../shared"])
+  working_dir: /Users/kbj/Documents/workspace/MMM
+  additional_dirs: []   
 
 gsd:
   enabled: true
