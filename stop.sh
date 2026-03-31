@@ -55,3 +55,17 @@ if [ -f "$PID_FILE" ]; then
 else
     echo "실행 중인 GSD Orchestrator가 없습니다. (instance: $INSTANCE_ID)"
 fi
+
+# 같은 디렉토리에서 실행 중인 좀비 프로세스 정리
+# PID 파일에 없지만 같은 cwd로 실행 중인 gsd_orchestrator 프로세스를 종료
+PROJECT_DIR="$(pwd)"
+ZOMBIE_PIDS=$(ps aux | grep 'python.*gsd_orchestrator' | grep -v grep | awk '{print $2}')
+for zpid in $ZOMBIE_PIDS; do
+    zcwd=$(lsof -p "$zpid" 2>/dev/null | awk '/cwd/{print $NF}')
+    if [ "$zcwd" = "$PROJECT_DIR" ]; then
+        echo "좀비 프로세스 발견, 종료 (PID: $zpid, cwd: $zcwd)"
+        kill "$zpid" 2>/dev/null
+        sleep 1
+        kill -0 "$zpid" 2>/dev/null && kill -9 "$zpid" 2>/dev/null
+    fi
+done

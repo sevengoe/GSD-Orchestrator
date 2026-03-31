@@ -28,15 +28,9 @@ set -a
 source .env
 set +a
 
-# 이 인스턴스의 기존 프로세스만 종료 (PID 파일 기반)
-if [ -f "$PID_FILE" ]; then
-    OLD_PID=$(cat "$PID_FILE")
-    if kill -0 "$OLD_PID" 2>/dev/null; then
-        echo "기존 인스턴스 종료 중 (PID: $OLD_PID)..."
-        ./stop.sh
-        sleep 1
-    fi
-fi
+# 이 인스턴스의 기존 프로세스 종료 (PID 파일 + 좀비 정리)
+./stop.sh
+sleep 1
 rm -f "$PID_FILE"
 
 # PYTHONPATH 설정

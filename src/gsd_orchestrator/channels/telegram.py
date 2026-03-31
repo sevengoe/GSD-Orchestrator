@@ -6,7 +6,7 @@ from typing import Callable, Awaitable
 
 from telegram import Update
 from telegram.error import (
-    BadRequest, Forbidden, TimedOut, NetworkError, RetryAfter, TelegramError,
+    BadRequest, Conflict, Forbidden, TimedOut, NetworkError, RetryAfter, TelegramError,
 )
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
@@ -64,6 +64,7 @@ class TelegramAdapter(ChannelAdapter):
 
     async def start(self, on_message: Callable[..., Awaitable[None]]) -> None:
         self._on_message_callback = on_message
+        self._conflict_count = 0
         self._app = (
             Application.builder()
             .token(self._bot_token)
@@ -91,8 +92,38 @@ class TelegramAdapter(ChannelAdapter):
         await self._app.updater.start_polling(
             poll_interval=1.0,
             drop_pending_updates=True,
+            error_callback=self._on_polling_error,
         )
         logger.info(f"TelegramAdapter 시작 (chat_id: {self._chat_id})")
+
+    def _on_polling_error(self, error) -> None:
+        """Polling 에러 콜백 (동기). Conflict 연속 3회 시 polling 재시작 예약."""
+        if isinstance(error, Conflict):
+            self._conflict_count += 1
+            logger.warning(f"Conflict 감지 ({self._conflict_count}/3)")
+            if self._conflict_count >= 3:
+                self._conflict_count = 0
+                import asyncio
+                loop = asyncio.get_event_loop()
+                loop.create_task(self._restart_polling())
+        else:
+            self._conflict_count = 0
+
+    async def _restart_polling(self) -> None:
+        """Conflict 해소를 위해 polling 중지 후 재시작."""
+        import asyncio
+        logger.warning("Conflict 3회 연속 — polling 재시작")
+        try:
+            await self._app.updater.stop()
+            await asyncio.sleep(5)
+            await self._app.updater.start_polling(
+                poll_interval=1.0,
+                drop_pending_updates=True,
+                error_callback=self._on_polling_error,
+            )
+            logger.info("Polling 재시작 완료")
+        except Exception as e:
+            logger.error(f"Polling 재시작 실패: {e}")
 
     async def stop(self) -> None:
         if self._app:
