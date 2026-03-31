@@ -70,7 +70,7 @@ echo "$PID" > "$PID_FILE"
 
 # 절전 방지 — 프로세스 실행 중에는 절전 모드 진입을 막아 polling 중단 방지
 if [[ "$(uname)" == "Darwin" ]]; then
-    caffeinate -i -w "$PID" &
+    caffeinate -is -w "$PID" &
     echo "GSD Orchestrator v0.5.0 시작 (PID: $PID, instance: ${INSTANCE_ID}, 절전 방지: caffeinate)"
 elif command -v systemd-inhibit &>/dev/null; then
     systemd-inhibit --what=idle --who="gsd-orchestrator" --why="메시지 polling 유지" \
