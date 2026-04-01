@@ -1327,8 +1327,12 @@ class InboxProcessor:
         if today_archive.exists():
             candidates.extend(today_archive.glob("*.json"))
 
-        # system-alert 제외, 시간순 정렬 (최신 먼저)
-        candidates = [f for f in candidates if "_system-alert" not in f.name]
+        # system-alert, agent-alert 제외, 시간순 정렬 (최신 먼저)
+        candidates = [
+            f for f in candidates
+            if "_system-alert" not in f.name
+            and "_agent-alert" not in f.name
+        ]
         candidates.sort(key=lambda f: f.name, reverse=True)
 
         # conversation_id가 있으면 같은 대화 메시지 우선 수집
