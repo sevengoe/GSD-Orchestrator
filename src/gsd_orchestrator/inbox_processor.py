@@ -42,6 +42,9 @@ _TOKEN_LIMIT_PATTERNS = [
     re.compile(r"too many (requests|tokens)", re.IGNORECASE),
     re.compile(r"429", re.IGNORECASE),
     re.compile(r"quota[_\s-]?exceeded", re.IGNORECASE),
+    re.compile(r"usage[_\s-]?limit", re.IGNORECASE),
+    re.compile(r"limit\s+reached", re.IGNORECASE),
+    re.compile(r"conversation[_\s-]?limit", re.IGNORECASE),
 ]
 # 리셋 시각 파싱 패턴 (예: "resets at 7 PM KST", "7:00 PM", "19:00" 등)
 _RESET_TIME_PATTERNS = [
@@ -1134,6 +1137,8 @@ class InboxProcessor:
             self._send_workqueue_result(
                 response_text, source, keyword)
             processing_file.unlink(missing_ok=True)
+            fc_path = Path(str(file) + ".failcount")
+            fc_path.unlink(missing_ok=True)
 
             self._fail_count_file.unlink(missing_ok=True)
             self._cooldown_file.unlink(missing_ok=True)
