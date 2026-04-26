@@ -115,3 +115,9 @@ echo ""
 echo "=== 설정 완료 ==="
 echo "1. .env 파일에 봇 토큰을 설정하세요"
 echo "2. ./start.sh 로 실행하세요"
+
+# config.yaml 이 없으면 example 에서 복사 (환경별 working_dir 설정 필요)
+if [ ! -f config.yaml ] && [ -f config.yaml.example ]; then
+    cp config.yaml.example config.yaml
+    echo "config.yaml 생성됨. claude.working_dir 를 환경에 맞게 수정하세요 (macOS: /Users/kbj/..., Ubuntu: /home/kbj/...)"
+fi

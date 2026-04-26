@@ -19,3 +19,6 @@ reports/
 # 시스템
 .DS_Store
 /tmp/
+
+# 환경별 설정 (메인/서브 working_dir 등 충돌 방지)
+config.yaml

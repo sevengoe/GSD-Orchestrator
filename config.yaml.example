@@ -41,7 +41,7 @@ claude:
   timeout: 600
   cooldown_retry_minutes: 10
   max_session_turns: 20
-  working_dir: /home/kbj/workspace/MMM
+  working_dir: ""    # 사용자가 환경별 설정 (예: macOS /Users/kbj/..., Ubuntu /home/kbj/...)
   additional_dirs: []   
 
 gsd:
