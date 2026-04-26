@@ -41,7 +41,7 @@ claude:
   timeout: 600
   cooldown_retry_minutes: 10
   max_session_turns: 20
-  working_dir: /Users/kbj/Documents/workspace/MMM
+  working_dir: /home/kbj/workspace/MMM
   additional_dirs: []   
 
 gsd:

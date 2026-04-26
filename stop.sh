@@ -3,7 +3,11 @@
 # 이 인스턴스의 프로세스 트리만 종료한다 (다른 인스턴스에 영향 없음).
 
 cd "$(dirname "$0")"
-INSTANCE_ID=$(echo -n "$(pwd)" | md5 -q | cut -c1-8)
+if command -v md5 >/dev/null 2>&1; then
+    INSTANCE_ID=$(echo -n "$(pwd)" | md5 -q | cut -c1-8)
+else
+    INSTANCE_ID=$(echo -n "$(pwd)" | md5sum | cut -c1-8)
+fi
 PID_FILE="/tmp/gsd-orchestrator-${INSTANCE_ID}.pid"
 
 kill_tree() {

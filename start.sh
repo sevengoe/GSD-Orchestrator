@@ -7,7 +7,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 PROJECT_DIR="$(pwd)"
 VENV_DIR="${PROJECT_DIR}/.venv"
-INSTANCE_ID=$(echo -n "$(pwd)" | md5 -q | cut -c1-8)
+# macOS: md5 -q, Linux: md5sum (차이 호환)
+if command -v md5 >/dev/null 2>&1; then
+    INSTANCE_ID=$(echo -n "$(pwd)" | md5 -q | cut -c1-8)
+else
+    INSTANCE_ID=$(echo -n "$(pwd)" | md5sum | cut -c1-8)
+fi
 PID_FILE="/tmp/gsd-orchestrator-${INSTANCE_ID}.pid"
 LOG_DIR="${PROJECT_DIR}/logs"
 
