@@ -207,7 +207,67 @@ def test_router_registered_prefixes(tmp_path):
     assert router.registered_prefixes == ["/a", "/aa", "/b"]
 
 
+def test_router_match_slack_source(echo_app_config):
+    """Slack source — Slack 슬래시 텍스트는 일반 message event 로 도착해서
+    AppRouter 가 channel_type 무관하게 매칭한다."""
+    router = AppRouter(echo_app_config)
+    slack_source = {
+        "channel_type": "slack",
+        "channel_id": "C12345",
+        "user_id": "U67890",
+        "user_name": "slacker",
+        "message_id": "1234567890.000200",
+        "thread_ts": None,
+    }
+    r = router.route("/echo from slack", slack_source)
+    assert r.matched and not r.rejected
+    assert r.app_name == "echo"
+    assert r.args == ["from", "slack"]
+
+
+def test_router_whitelist_with_slack_user_id(tmp_path):
+    """whitelist 검증이 Slack user_id (U-prefix 문자열) 에서도 동작."""
+    apps = _normalize_app_bridge_apps([{
+        "name": "secured",
+        "mode": "file",
+        "command_prefix": ["/sell"],
+        "whitelist_user_ids": ["U67890"],  # Slack 형식 user_id
+    }], tmp_path)
+    router = AppRouter(apps)
+    slack_source = {"channel_type": "slack", "channel_id": "C1",
+                    "user_id": "U67890", "user_name": "ok"}
+    r = router.route("/sell d2", slack_source)
+    assert r.matched and not r.rejected
+
+    # 미등록 Slack 사용자
+    slack_source["user_id"] = "U99999"
+    r = router.route("/sell d2", slack_source)
+    assert r.matched and r.rejected
+    assert r.reason == "whitelist"
+
+
 # ── AppCommandWriter — 파일 작성 ────────────────────
+
+def test_command_writer_with_slack_source(app_bridge_dirs):
+    """Slack source 로 inbound 작성 시 channel_type='slack' 그대로 보존."""
+    writer = AppCommandWriter(outbox_dir=app_bridge_dirs["outbox"])
+    slack_source = {
+        "channel_type": "slack",
+        "channel_id": "C12345",
+        "user_id": "U67890",
+        "user_name": "slacker",
+    }
+    target = writer.write(
+        app_inbox_dir=app_bridge_dirs["echo_inbox"],
+        app_name="echo", command_id="cid-slack",
+        prefix="/echo", raw_command="/echo hi",
+        args=["hi"], source=slack_source,
+    )
+    data = json.loads(target.read_text())
+    assert data["source"]["channel_type"] == "slack"
+    assert data["source"]["channel_id"] == "C12345"
+    assert data["source"]["user_id"] == "U67890"
+
 
 def test_command_writer_writes_atomic(app_bridge_dirs, telegram_source):
     writer = AppCommandWriter(outbox_dir=app_bridge_dirs["outbox"])

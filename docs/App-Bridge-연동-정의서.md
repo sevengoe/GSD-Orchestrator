@@ -26,6 +26,7 @@
 10. [에러 / 거부 케이스](#10-에러--거부-케이스)
 11. [API 모드 시그니처 계약](#11-api-모드-시그니처-계약)
 12. [등록 (config.yaml)](#12-등록-configyaml)
+12.A. [채널별 슬래시 명령 도달 메커니즘](#12a-채널별-슬래시-명령-도달-메커니즘)
 13. [예약어 / 충돌](#13-예약어--충돌)
 14. [버저닝 / 호환성](#14-버저닝--호환성)
 15. [Test Vectors](#15-test-vectors)
@@ -421,6 +422,41 @@ app_bridge:
 | `name` 누락 | `ValueError` |
 | `command_prefix` 비어있음 | `ValueError` |
 | 두 앱이 같은 prefix 등록 | `ValueError` (충돌 메시지에 두 앱 이름 포함) |
+
+## 12.A 채널별 슬래시 명령 도달 메커니즘
+
+GSD 의 `_on_channel_message` 는 channel_type 무관하게 동일한 `AppRouter` 를 호출한다. 단 **사용자 입력이 채널 어댑터까지 도달하는 경로**는 채널마다 다르다.
+
+### Telegram (Bot API)
+
+- Telegram Bot API 는 `/echo hello` 같은 텍스트의 `entities[0].type == "bot_command"` 로 Command 엔티티를 분리한다.
+- python-telegram-bot 의 `filters.COMMAND` 가 일반 `MessageHandler(filters.TEXT)` 에서 슬래시 명령을 제외한다.
+- 따라서 GSD 는 명시적으로 미등록 슬래시 명령을 위임하는 fallback 핸들러(`unknown_command_filter = filters.COMMAND & ~filters.Regex(...)`)를 추가했다 (`channels/telegram.py`).
+
+### Slack (Socket Mode `event("message")`)
+
+- Slack 의 채널 메시지 이벤트는 슬래시 텍스트(`/echo hello`)를 일반 `message` 이벤트의 `text` 필드로 그대로 전달한다 (Telegram 과 다름).
+- 따라서 별도 필터 코드 없이 기존 `_handle_message` → `_on_message_callback` → `_try_app_bridge_route` 경로로 자연스럽게 라우팅된다.
+- App Bridge 통합을 위해 `channels/slack.py` 에 추가된 코드는 **0줄**.
+
+### ⚠️ Slack workspace 의 native slash command 와 충돌
+
+Slack workspace 관리자가 Slack App 설정에서 동일 prefix(예: `/echo`)를 **slash command 로 등록**하면, Slack 은 사용자 입력을 **별도 HTTPS webhook 으로** 전달하고 GSD 의 Socket Mode 메시지 이벤트로는 보내지 않는다. 이 경우 App Bridge 라우팅이 동작하지 않는다.
+
+**대응**:
+- Slack App 설정의 "Slash Commands" 섹션에 **App Bridge 와 같은 prefix 를 등록하지 말 것** (MUST NOT)
+- Slack 에서 자주 쓰이는 prefix (`/remind`, `/giphy`, `/dm` 등) 와의 충돌을 피하기 위해 비즈니스 명령은 `/app:` 또는 앱 이름 prefix 사용 권장 (예: `/mmm_sell`, `/portfolio`) — SHOULD
+
+### 채널별 user_id 형식 차이
+
+`whitelist_user_ids` 는 **문자열 비교** 이며 채널마다 형식이 다르다:
+
+| 채널 | user_id 형식 | 예 |
+|---|---|---|
+| Telegram | 정수 ID 의 문자열 | `"12345678"` |
+| Slack | `U` prefix + 문자/숫자 | `"U01ABCDEF"` |
+
+같은 사용자가 두 채널에서 모두 명령을 보내려면 두 ID 를 모두 whitelist 에 등록해야 한다.
 
 ## 13. 예약어 / 충돌
 

@@ -12,6 +12,7 @@
 - `outbox_sender.py`: `command_id` 가 있으면 발송 직전 `correlator.resolve()` 호출, 만료 응답에 `[지연 응답]` prefix 자동 부착
 - `orchestrator.py`: `_try_app_bridge_route()` 에서 라우팅 분기 (default 모드 + 슬래시 명령만), `app_bridge` 프로퍼티로 호스트 앱이 핸들러 등록 가능
 - `channels/telegram.py`: 미등록 슬래시 명령(예: `/sell`)을 `_on_message` 로 위임. `filters.COMMAND` 에서 GSD 메타 명령(`/help`, `/gsd`, `/status`, `/reset`, `/resume`, `/retry`)은 정규식으로 제외하여 중복 처리 방지
+- `channels/slack.py`: **변경 0줄** — Slack Socket Mode `event("message")` 가 슬래시 텍스트(`/echo hi`)를 일반 메시지로 전달하므로 기존 `_handle_message` → `_on_message_callback` 경로로 자동 라우팅됨. AppRouter 가 channel_type 무관하게 매칭하여 통합 동작. ⚠️ Slack workspace 가 동일 prefix 를 native slash command 로 등록 시 webhook 으로 분기되어 GSD 미도달 — 정의서 §12.A 참고. 운영상 Slack 사용 시 prefix 충돌 회피 책임은 운영자에게 있음 (장기 검증 항목)
 - `config.yaml` `app_bridge` 섹션: `enabled`, `external_inbox_base`, `response_timeout_sec`, `ack_timeout_sec`, `max_args_length`, `apps[*]` (name, mode, inbox_dir, command_prefix, whitelist_user_ids, ack_message)
 - `config.py::_normalize_app_bridge_apps`: 시작 시 prefix 충돌·잘못된 mode·`/` 누락 검증 (`ValueError` 로 startup fail)
 - `tests/test_app_bridge.py`: 31개 단위 테스트 (config 정규화, 라우팅, command_writer, correlator, echo round-trip, api 모드 sync/async, 핸들러 예외 처리, OutboxSender 통합)
