@@ -66,3 +66,18 @@ paths:
   archive_dir: messages/archive
   workqueue_dir: messages/workqueue
   plan_dir: messages/plan
+
+app_bridge:
+  enabled: false                   # App Bridge 활성화 (외부 앱 통합)
+  external_inbox_base: messages/external_inbox
+  response_timeout_sec: 60         # 외부 앱 응답 대기 시간
+  ack_timeout_sec: 5               # 사용자 ack 발송 시간
+  max_args_length: 1024            # 명령 args 총 길이 제한 (악성 입력 차단)
+  apps: []                         # 등록 앱 목록 (예시는 docs/외부-앱-통합-가이드.md 참조)
+  # apps 예시:
+  #   - name: echo
+  #     mode: file                  # file | api
+  #     inbox_dir: messages/external_inbox/echo
+  #     command_prefix: ["/echo"]
+  #     whitelist_user_ids: []      # 빈 리스트 = 전체 허용
+  #     ack_message: "[echo] 명령 접수 (ID={id})"

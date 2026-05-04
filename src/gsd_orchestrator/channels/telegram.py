@@ -80,6 +80,14 @@ class TelegramAdapter(ChannelAdapter):
         self._app.add_handler(CommandHandler("resume", self._on_resume))
         self._app.add_handler(CommandHandler("retry", self._on_retry))
         self._app.add_handler(CommandHandler("gsd", self._on_gsd))
+        # 미등록 슬래시 명령(App Bridge 비즈니스 명령)은 _on_message 로 위임.
+        # 알려진 GSD 메타 명령은 제외하여 중복 처리를 방지한다.
+        unknown_command_filter = filters.COMMAND & ~filters.Regex(
+            r"^/(help|start|reset|status|resume|retry|gsd)(\s|@|$)"
+        )
+        self._app.add_handler(
+            MessageHandler(unknown_command_filter, self._on_message)
+        )
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )

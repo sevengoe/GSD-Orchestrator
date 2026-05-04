@@ -15,7 +15,8 @@ from .inbox_writer import InboxWriter, extract_keyword
 from .outbox_sender import OutboxSender
 from .inbox_processor import InboxProcessor
 from .archiver import Archiver
-from .api import ChannelSender
+from .api import ChannelSender, AppBridge
+from .app_bridge import AppRouter, AppCommandWriter, AppResponseCorrelator
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,26 @@ class Orchestrator:
 
         self._channel_manager = ChannelManager(adapters)
 
+        # ── App Bridge (외부 앱 통합) ──
+        self._app_router: AppRouter | None = None
+        self._app_command_writer: AppCommandWriter | None = None
+        self._app_correlator: AppResponseCorrelator | None = None
+        self._app_bridge: AppBridge | None = None
+        if config.app_bridge_enabled and config.app_bridge_apps:
+            self._app_router = AppRouter(
+                apps=config.app_bridge_apps,
+                max_args_length=config.app_bridge_max_args_length,
+            )
+            self._app_command_writer = AppCommandWriter(outbox_dir=config.outbox_dir)
+            self._app_correlator = AppResponseCorrelator(
+                outbox_dir=config.outbox_dir,
+                default_timeout_sec=config.app_bridge_response_timeout_sec,
+            )
+            logger.info(
+                f"[app_bridge] 활성 — 앱 {len(config.app_bridge_apps)}개, "
+                f"prefix: {self._app_router.registered_prefixes}"
+            )
+
         self._inbox_processor = InboxProcessor(
             config, self._channel_manager, result_callback=self._fire_result)
         self._outbox_sender = OutboxSender(
@@ -106,9 +127,16 @@ class Orchestrator:
             error_dir=config.error_dir,
             interval=config.outbox_interval,
             snippet_length=config.broadcast_snippet_length,
+            correlator=self._app_correlator,
         )
 
         self._channel_sender = ChannelSender(self._channel_manager, config.outbox_dir)
+        # AppBridge — api 모드 호스트 앱이 핸들러 등록 가능 (app_bridge 비활성 시에도 인스턴스는 존재)
+        self._app_bridge_api = AppBridge(
+            channel_sender=self._channel_sender,
+            channel_manager=self._channel_manager,
+            outbox_dir=config.outbox_dir,
+        )
 
     # ── 외부 연동 인터페이스 ──────────────────────────────
 
@@ -116,6 +144,14 @@ class Orchestrator:
     def channel_sender(self) -> ChannelSender:
         """호스트 앱용 채널 발송 API."""
         return self._channel_sender
+
+    @property
+    def app_bridge(self) -> AppBridge:
+        """호스트 앱용 외부 앱 핸들러 등록 API (api 모드).
+
+        예: orchestrator.app_bridge.register("mmm", async_handler_fn)
+        """
+        return self._app_bridge_api
 
     def on_result(self, callback: ResultCallback) -> None:
         """처리 결과 콜백을 등록한다.
@@ -148,6 +184,12 @@ class Orchestrator:
         if self._is_duplicate_message(source):
             logger.info(f"중복 메시지 skip: {source.get('channel_type')}_{source.get('message_id')}")
             return
+
+        # ── App Bridge 라우팅 (default 모드 + 슬래시 명령만) ──
+        if mode == "default" and self._app_router is not None:
+            handled = await self._try_app_bridge_route(source, text)
+            if handled:
+                return
 
         pending = self._inbox_writer.pending_count()
 
@@ -234,6 +276,86 @@ class Orchestrator:
                                  conversation_id=conv_id)
 
         # 수신 확인은 inbox_processor가 .processing 전환 시 발송
+
+    # ── App Bridge 라우팅 헬퍼 ──────────────────────────
+
+    async def _try_app_bridge_route(self, source: dict, text: str) -> bool:
+        """슬래시 명령을 외부 앱으로 라우팅 시도. 처리됐으면 True.
+
+        반환값 True 면 호출자는 더 이상 처리하지 않고 종료.
+        False 면 기존 GSD 흐름으로 진행.
+        """
+        result = self._app_router.route(text, source)
+        if not result.matched:
+            return False
+
+        ch_type = source.get("channel_type", "")
+        ch_id = source.get("channel_id", "")
+
+        # 거부 (whitelist / 길이 / 위험문자)
+        if result.rejected:
+            logger.warning(
+                f"[app_bridge] 명령 거부 — app={result.app_name} "
+                f"reason={result.reason} user={source.get('user_id')}")
+            if result.reject_message:
+                await self._channel_manager.send_to(
+                    ch_type, ch_id, result.reject_message)
+            return True
+
+        # 매칭 성공 — ack 발송 + 디스패치
+        if result.ack_message:
+            await self._channel_manager.send_to(ch_type, ch_id, result.ack_message)
+
+        app = self._app_router.get_app(result.app_name)
+        if not app:
+            logger.error(f"[app_bridge] 앱 설정 누락: {result.app_name}")
+            return True
+
+        # correlator 등록
+        if self._app_correlator is not None:
+            self._app_correlator.register(
+                command_id=result.command_id,
+                app_name=result.app_name,
+                source=source,
+                raw_command=result.raw_command,
+            )
+
+        try:
+            if app["mode"] == "file":
+                self._app_command_writer.write(
+                    app_inbox_dir=app["inbox_dir"],
+                    app_name=result.app_name,
+                    command_id=result.command_id,
+                    prefix=result.prefix,
+                    raw_command=result.raw_command,
+                    args=result.args,
+                    source=source,
+                )
+            elif app["mode"] == "api":
+                if not self._app_bridge_api.has_handler(result.app_name):
+                    logger.error(
+                        f"[app_bridge] api 핸들러 미등록: {result.app_name}")
+                    await self._channel_manager.send_to(
+                        ch_type, ch_id,
+                        f"[{result.app_name}] api 핸들러가 등록되지 않았습니다.")
+                    return True
+                await self._app_bridge_api.dispatch(
+                    app_name=result.app_name,
+                    command_id=result.command_id,
+                    prefix=result.prefix,
+                    raw_command=result.raw_command,
+                    args=result.args,
+                    source=source,
+                )
+            else:
+                logger.error(f"[app_bridge] 미지원 mode: {app['mode']}")
+        except Exception as e:
+            logger.exception(f"[app_bridge] 디스패치 실패: {e}")
+            await self._channel_manager.send_to(
+                ch_type, ch_id,
+                f"[{result.app_name}] 명령 디스패치 실패: {type(e).__name__}: {e}")
+
+        return True
 
     # ── 의도 판별 헬퍼 ─────────────────────────────────
 
@@ -344,6 +466,8 @@ class Orchestrator:
             asyncio.create_task(self._inbox_stale_check()),
             asyncio.create_task(self._run_archiver()),
         ]
+        if self._app_correlator is not None:
+            self._tasks.append(asyncio.create_task(self._app_correlator.run()))
 
         await self._channel_manager.start_all(self._on_channel_message)
 

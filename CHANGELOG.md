@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.7.0] - 2026-05-04
+
+### Added — App Bridge (외부 비즈니스 앱 통합 인프라)
+사용자 → 외부 앱 방향의 슬래시 명령 라우팅 지원. GSD 본체는 명령 의미를 모르고, prefix 매칭·whitelist·correlation·timeout 만 처리. **두 가지 통합 모드 제공: file (독립 프로세스) + api (in-process)**.
+
+- `app_bridge/router.py`: `AppRouter` — 슬래시 명령 prefix 매칭, whitelist 검증, args 길이/위험 문자 차단
+- `app_bridge/command_writer.py`: `AppCommandWriter` — file 모드 외부 앱 inbox 원자적 작성 (`.tmp` → rename)
+- `app_bridge/correlator.py`: `AppResponseCorrelator` — `command_id` pending 추적, 60초 timeout 알림 백그라운드 태스크, 지연 응답 best-effort 전달 (`[지연 응답]` prefix)
+- `api.py::AppBridge`: api 모드 in-process Python 핸들러 등록/디스패치 (`register(name, handler)`, sync/async 모두 지원)
+- `outbox_sender.py`: `command_id` 가 있으면 발송 직전 `correlator.resolve()` 호출, 만료 응답에 `[지연 응답]` prefix 자동 부착
+- `orchestrator.py`: `_try_app_bridge_route()` 에서 라우팅 분기 (default 모드 + 슬래시 명령만), `app_bridge` 프로퍼티로 호스트 앱이 핸들러 등록 가능
+- `channels/telegram.py`: 미등록 슬래시 명령(예: `/sell`)을 `_on_message` 로 위임. `filters.COMMAND` 에서 GSD 메타 명령(`/help`, `/gsd`, `/status`, `/reset`, `/resume`, `/retry`)은 정규식으로 제외하여 중복 처리 방지
+- `config.yaml` `app_bridge` 섹션: `enabled`, `external_inbox_base`, `response_timeout_sec`, `ack_timeout_sec`, `max_args_length`, `apps[*]` (name, mode, inbox_dir, command_prefix, whitelist_user_ids, ack_message)
+- `config.py::_normalize_app_bridge_apps`: 시작 시 prefix 충돌·잘못된 mode·`/` 누락 검증 (`ValueError` 로 startup fail)
+- `tests/test_app_bridge.py`: 31개 단위 테스트 (config 정규화, 라우팅, command_writer, correlator, echo round-trip, api 모드 sync/async, 핸들러 예외 처리, OutboxSender 통합)
+- `tests/fixtures/echo_app.py`: file 모드 reference 외부 앱 (다른 비즈니스 앱이 따라할 폴링 패턴 예제)
+- `docs/외부-앱-통합-가이드.md`: 신규 — file/api 두 모드 통합 튜토리얼, 코드 예시
+- `docs/App-Bridge-연동-정의서.md`: 신규 — 공식 사양 (Spec v1.0). 다른 언어/팀이 구현할 수 있도록 RFC 2119 키워드(MUST/SHOULD/MAY)로 필드 단위 명세, 상태 전이, JSON Schema (Draft 2020-12), test vectors, conformance checklist
+- `docs/아키텍처.md` / `docs/사용자-가이드.md`: App Bridge 섹션 추가
+
+### Design notes
+
+- GSD 가 v0.8 → v1.x 업그레이드 시 비즈니스 명령 코드 충돌 방지 — 외부 앱은 GSD 코드 수정 없이 config 한 줄로 등록
+- 두 모드 동시 사용 가능 (앱 A는 file, 앱 B는 api)
+- 응답 timeout 후 도착해도 best-effort 로 사용자에게 전달 (24시간 보관)
+- 외부 앱 healthcheck 는 외부 앱 책임 (GSD 는 모니터링 안 함)
+- MCP 서버와는 별개 메커니즘 (App Bridge 는 채널 슬래시 명령, MCP 는 Claude tool 호출)
+
+---
+
 ## [0.6.1] - 2026-03-29
 
 ### Fixed

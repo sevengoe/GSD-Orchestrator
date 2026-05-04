@@ -13,12 +13,14 @@ MAX_OUTBOX_RETRIES = 3
 class OutboxSender:
     def __init__(self, channel_manager: ChannelManager, outbox_dir: Path,
                  sent_dir: Path, error_dir: Path, interval: int = 3,
-                 snippet_length: int = 500):
+                 snippet_length: int = 500,
+                 correlator=None):
         self._channel_manager = channel_manager
         self._dir = outbox_dir
         self._sent_dir = sent_dir
         self._error_dir = error_dir
         self._snippet_length = snippet_length
+        self._correlator = correlator  # AppResponseCorrelator | None
         self._dir.mkdir(parents=True, exist_ok=True)
         self._sent_dir.mkdir(parents=True, exist_ok=True)
         self._error_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +81,14 @@ class OutboxSender:
         response_text = response["text"]
         parse_mode = response.get("parse_mode", "HTML")
         retry_count = data.get("retry_count", 0)
+
+        # ── App Bridge correlation: pending 에서 제거 + 지연 응답 표시 ──
+        command_id = data.get("command_id")
+        if command_id and self._correlator is not None:
+            was_expired = self._correlator.is_expired(command_id)
+            self._correlator.resolve(command_id)
+            if was_expired and not response_text.startswith("[지연 응답]"):
+                response_text = f"[지연 응답] {response_text}"
 
         # 하위 호환: targets 없으면 source 또는 chat_id로 단일 타겟
         if not targets:

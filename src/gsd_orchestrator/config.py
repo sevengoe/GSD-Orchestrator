@@ -14,6 +14,69 @@ def _make_instance_id(base_dir: Path) -> str:
     return hashlib.md5(str(base_dir.resolve()).encode()).hexdigest()[:8]
 
 
+def _normalize_app_bridge_apps(apps_cfg: list, base_dir: Path) -> list:
+    """app_bridge.apps 항목을 정규화한다. prefix 충돌 검증 포함.
+
+    각 항목 dict 키:
+      name (str), mode ("file"|"api"), inbox_dir (Path, file 모드만 의미),
+      command_prefix (list[str]), whitelist_user_ids (list[str]),
+      ack_message (str)
+    """
+    normalized: list[dict] = []
+    seen_prefixes: dict[str, str] = {}  # prefix -> app_name
+
+    for raw in apps_cfg:
+        if not isinstance(raw, dict):
+            continue
+        name = raw.get("name", "").strip()
+        if not name:
+            raise ValueError(f"app_bridge.apps: 'name' 누락 — {raw}")
+        mode = raw.get("mode", "file").strip().lower()
+        if mode not in ("file", "api"):
+            raise ValueError(
+                f"app_bridge.apps[{name}]: 'mode' 는 file 또는 api 여야 함 (got: {mode})")
+
+        prefixes = raw.get("command_prefix", []) or []
+        if isinstance(prefixes, str):
+            prefixes = [prefixes]
+        prefixes = [p.strip() for p in prefixes if p and p.strip()]
+        if not prefixes:
+            raise ValueError(f"app_bridge.apps[{name}]: 'command_prefix' 비어있음")
+
+        for p in prefixes:
+            if not p.startswith("/"):
+                raise ValueError(
+                    f"app_bridge.apps[{name}]: command_prefix '{p}' 는 '/' 로 시작해야 함")
+            if p in seen_prefixes and seen_prefixes[p] != name:
+                raise ValueError(
+                    f"app_bridge.apps: command_prefix '{p}' 가 "
+                    f"앱 '{seen_prefixes[p]}' 와 '{name}' 에서 중복 등록됨")
+            seen_prefixes[p] = name
+
+        whitelist = raw.get("whitelist_user_ids", []) or []
+        whitelist = [str(uid) for uid in whitelist]
+
+        inbox_dir_raw = raw.get("inbox_dir", "")
+        if mode == "file":
+            inbox_dir = base_dir / (inbox_dir_raw or f"messages/external_inbox/{name}")
+        else:
+            inbox_dir = None  # api 모드는 inbox_dir 사용 안 함
+
+        ack_message = raw.get("ack_message",
+                              f"[{name}] 명령 접수 (ID={{id}})")
+
+        normalized.append({
+            "name": name,
+            "mode": mode,
+            "inbox_dir": inbox_dir,
+            "command_prefix": prefixes,
+            "whitelist_user_ids": whitelist,
+            "ack_message": ack_message,
+        })
+
+    return normalized
+
+
 @dataclass
 class Config:
     # channels — telegram
@@ -84,6 +147,14 @@ class Config:
     attachments_max_file_size: int = 1_048_576  # 1MB
     attachments_temp_dir: Path = Path("messages/attachments")
     attachments_reject_message: str = "txt, md, pdf 파일만 지원합니다."
+
+    # app_bridge — 외부 앱 통합 (file 모드 + api 모드)
+    app_bridge_enabled: bool = False
+    app_bridge_external_inbox_base: Path = Path("messages/external_inbox")
+    app_bridge_response_timeout_sec: int = 60
+    app_bridge_ack_timeout_sec: int = 5
+    app_bridge_max_args_length: int = 1024
+    app_bridge_apps: list = field(default_factory=list)  # list[dict]: name, mode, inbox_dir, command_prefix, whitelist_user_ids, ack_message
 
     def runtime_path(self, name: str) -> Path:
         """인스턴스별 런타임 파일 경로를 반환한다. /tmp/gsd-orchestrator-{hash}.{name}"""
@@ -165,6 +236,15 @@ class Config:
             archive_dir=base_dir / cfg["paths"]["archive_dir"],
             workqueue_dir=base_dir / cfg["paths"].get("workqueue_dir", "messages/workqueue"),
             plan_dir=base_dir / cfg["paths"].get("plan_dir", "messages/plan"),
+            # app_bridge
+            app_bridge_enabled=cfg.get("app_bridge", {}).get("enabled", False),
+            app_bridge_external_inbox_base=base_dir / cfg.get("app_bridge", {}).get(
+                "external_inbox_base", "messages/external_inbox"),
+            app_bridge_response_timeout_sec=cfg.get("app_bridge", {}).get("response_timeout_sec", 60),
+            app_bridge_ack_timeout_sec=cfg.get("app_bridge", {}).get("ack_timeout_sec", 5),
+            app_bridge_max_args_length=cfg.get("app_bridge", {}).get("max_args_length", 1024),
+            app_bridge_apps=_normalize_app_bridge_apps(
+                cfg.get("app_bridge", {}).get("apps", []) or [], base_dir),
             # instance
             instance_id=instance_id,
         )
